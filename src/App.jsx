@@ -205,6 +205,7 @@ function App() {
   const [marketData, setMarketData] = useState([]);
   const [activeSymbols, setActiveSymbols] = useState([]);
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+  const [sortBy, setSortBy] = useState('volume'); // Тут мы создали "переключатель" сортировки
   const dropdownRef = useRef(null);
 
   const [tabs, setTabs] = useState([{ 
@@ -215,7 +216,7 @@ function App() {
       minTrades: 1000000, maxTrades: 99999999, trdPeriod: 24, 
       minNatr: 0, maxNatr: 100, natrPeriod: 2,
       minVolat: 0, maxVolat: 100, volatPeriod: 6,
-      minCorr: -100, maxCorr: 100, corrPeriod: 1 // ИЗМЕНЕНО: minCorr теперь -100 по умолчанию
+      minCorr: -100, maxCorr: 100, corrPeriod: 1 
     } 
   }]);
   const [activeTabId, setActiveTabId] = useState(1);
@@ -243,13 +244,19 @@ function App() {
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
   const updateF = (key, val) => setTabs(tabs.map(t => t.id === activeTabId ? { ...t, filters: { ...t.filters, [key]: Number(val) } } : t));
 
+  // ВОТ ТУТ ПРОИСХОДИТ МАГИЯ СОРТИРОВКИ
   const filteredCoins = marketData.filter(item => {
     if (!activeSymbols.includes(item.symbol)) return false;
     const v = parseFloat(item.quoteVolume)/1e6, c = Math.abs(parseFloat(item.priceChangePercent)), t = parseInt(item.count);
     return v >= activeTab.filters.minVolume && v <= activeTab.filters.maxVolume && 
            c >= activeTab.filters.minChange && c <= activeTab.filters.maxChange && 
            t >= activeTab.filters.minTrades;
-  }).sort((a, b) => b.quoteVolume - a.quoteVolume);
+  }).sort((a, b) => {
+    if (sortBy === 'volume') return parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume);
+    if (sortBy === 'change') return Math.abs(parseFloat(b.priceChangePercent)) - Math.abs(parseFloat(a.priceChangePercent));
+    if (sortBy === 'trades') return parseInt(b.count) - parseInt(a.count);
+    return 0;
+  });
 
   const displayedCoins = filteredCoins.slice(0, 12);
 
@@ -276,6 +283,17 @@ function App() {
           </div>
           <div className="header-right">
             <div className="results-count">Найдено: <span className="green-accent">{filteredCoins.length}</span></div>
+            
+            {/* НОВЫЙ ВЫПАДАЮЩИЙ СПИСОК ДЛЯ СОРТИРОВКИ */}
+            <div className="sort-box">
+              <span className="sort-label">Сортировка:</span>
+              <select className="global-tf-select" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+                <option value="volume">Объем</option>
+                <option value="change">Изм %</option>
+                <option value="trades">Сделки</option>
+              </select>
+            </div>
+
             <select className="global-tf-select" value={activeTab.globalTf} onChange={(e) => setTabs(tabs.map(t => t.id === activeTabId ? {...t, globalTf: e.target.value} : t))}>
               {timeframes.map(tf => <option key={tf} value={tf}>{tf}</option>)}
             </select>
