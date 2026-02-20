@@ -47,6 +47,8 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, isFirstTab }) 
   const [localTf, setLocalTf] = useState(globalTf);
   const [dataReady, setDataReady] = useState({ isHidden: false, stats: {} });
   const [loading, setLoading] = useState(true);
+  const candleSeriesRef = useRef(); 
+  const volumeSeriesRef = useRef();
 
   useEffect(() => { setLocalTf(globalTf); }, [globalTf]);
 
@@ -124,6 +126,10 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, isFirstTab }) 
       color: '#26a69a', priceFormat: { type: 'volume' }, priceScaleId: '', 
     });
 
+    // Привязываем созданные серии к "рефам", чтобы сокет мог их видеть
+    candleSeriesRef.current = candleSeries;
+    volumeSeriesRef.current = volumeSeries;
+
     chart.priceScale('').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
     chartRef.current = chart;
 
@@ -142,14 +148,11 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, isFirstTab }) 
 
         const tfMin = { '1m': 1, '5m': 5, '15m': 15, '1h': 60, '4h': 240, '1d': 1440 }[localTf] || 5;
         const lastPrice = data[lastIdx].close;
-        
-        // ИЗМЕНЕНО: Функция среза теперь может брать на 1 свечу больше, это нужно для расчета % изменения цены
         const getSlice = (h, extra = 0) => data.slice(-Math.round((h * 60) / (tfMin || 5)) - extra);
 
         const stats = {
           natr: (getSlice(filters.natrPeriod || 2).reduce((s, b) => s + (b.high - b.low), 0) / (getSlice(filters.natrPeriod || 2).length || 1) / lastPrice) * 100,
           volat: (getSlice(filters.volatPeriod || 6).reduce((s, b) => s + (b.high - b.low), 0) / (getSlice(filters.volatPeriod || 6).length || 1) / lastPrice) * 100,
-          // ИЗМЕНЕНО: Считаем реальную корреляцию вместо случайной цифры
           corr: symbol === 'BTCUSDT' ? 100 : Math.round(calculateCorrelation(getSlice(filters.corrPeriod || 1, 1)))
         };
 
@@ -162,7 +165,38 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, isFirstTab }) 
       }
       setLoading(false);
     });
-    return () => chart.remove();
+
+    // СОЗДАЕМ СОКЕТ ДЛЯ ОБНОВЛЕНИЯ В РЕАЛЬНОМ ВРЕМЕНИ
+    const ws = new WebSocket(`wss://fstream.binance.com/ws/${symbol.toLowerCase()}@kline_${localTf}`);
+
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      if (msg.e === 'kline') {
+        const k = msg.k;
+        const candleUpdate = {
+          time: k.t / 1000,
+          open: parseFloat(k.o),
+          high: parseFloat(k.h),
+          low: parseFloat(k.l),
+          close: parseFloat(k.c)
+        };
+        
+        // Магия обновления без перезагрузки
+        if (candleSeriesRef.current) candleSeriesRef.current.update(candleUpdate);
+        if (volumeSeriesRef.current) {
+          volumeSeriesRef.current.update({
+            time: k.t / 1000,
+            value: parseFloat(k.v),
+            color: parseFloat(k.c) >= parseFloat(k.o) ? 'rgba(0, 255, 157, 0.5)' : 'rgba(255, 59, 59, 0.5)'
+          });
+        }
+      }
+    };
+
+    return () => {
+      chart.remove();
+      ws.close(); // Теперь ws существует и закроется корректно
+    };
   }, [localTf, symbol, loadHistory, filters, isFirstTab]);
 
   if (dataReady.isHidden) return null;
