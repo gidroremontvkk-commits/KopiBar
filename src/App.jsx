@@ -119,7 +119,12 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, isFirstTab }) 
     
     const candleSeries = chart.addCandlestickSeries({ 
       upColor: '#00ff9d', downColor: '#ff3b3b', borderVisible: false,
-      wickUpColor: '#00ff9d', wickDownColor: '#ff3b3b'
+      wickUpColor: '#00ff9d', wickDownColor: '#ff3b3b',
+      priceFormat: {
+        type: 'price',
+        precision: 8,      // Максимальное кол-во знаков для дешевых монет
+        minMove: 0.00000001, // Минимальный шаг цены
+      },
     });
 
     const volumeSeries = chart.addHistogramSeries({
@@ -128,6 +133,18 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, isFirstTab }) 
 
     // Привязываем созданные серии к "рефам", чтобы сокет мог их видеть
     candleSeriesRef.current = candleSeries;
+    // Автоматическая настройка точности в зависимости от цены монеты
+    candleSeries.applyOptions({
+      priceFormat: {
+        type: 'custom',
+        formatter: price => {
+          if (price === undefined) return '';
+          if (price > 1) return price.toFixed(2);
+          if (price > 0.01) return price.toFixed(4);
+          return price.toFixed(8); // Для очень дешевых активов
+        },
+      },
+    });
     volumeSeriesRef.current = volumeSeries;
 
     chart.priceScale('').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
