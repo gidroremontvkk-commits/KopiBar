@@ -4,26 +4,24 @@ body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-se
 .app-container { width: 100vw; display: flex; flex-direction: column; }
 
 /* ШАПКА */
-.main-header { 
-  background: #0d0d0f; 
-  padding: 12px 20px 0 20px; 
+.main-header {
+  background: #0d0d0f;
+  padding: 12px 20px 0 20px;
 }
-
-.header-top { 
-  display: flex; 
-  align-items: center; 
-  justify-content: space-between; 
+.header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding-bottom: 12px;
 }
-
 .logo { font-size: 18px; font-weight: 800; color: #fff; min-width: 100px; }
 .green-accent { color: #00ff9d; }
 
 .tabs-container { display: flex; gap: 6px; margin: 0 25px; flex-grow: 1; overflow-x: auto; align-items: center; }
-.tab-item { 
-    background: #161618; color: #a1a1aa; padding: 6px 14px; border-radius: 4px; 
-    font-size: 12px; cursor: pointer; border: 1px solid #27272a; display: flex; 
-    align-items: center; white-space: nowrap; gap: 8px;
+.tab-item {
+  background: #161618; color: #a1a1aa; padding: 6px 14px; border-radius: 4px;
+  font-size: 12px; cursor: pointer; border: 1px solid #27272a; display: flex;
+  align-items: center; white-space: nowrap; gap: 8px;
 }
 .tab-item.active { background: #00ff9d; color: #000; border-color: #00ff9d; font-weight: 600; }
 .close-x { color: #ff3b3b; font-weight: bold; }
@@ -31,242 +29,180 @@ body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-se
 
 .header-right { display: flex; align-items: center; gap: 12px; }
 .results-count { font-size: 11px; color: #71717a; background: #161618; padding: 6px 12px; border: 1px solid #27272a; border-radius: 4px; }
-.global-tf-select { background: #161618; color: #00ff9d; border: 1px solid #27272a; padding: 5px; border-radius: 4px; font-size: 12px; outline: none;}
+.global-tf-select { background: #161618; color: #00ff9d; border: 1px solid #27272a; padding: 5px; border-radius: 4px; font-size: 12px; outline: none; }
 .refresh-btn { background: #161618; border: 1px solid #27272a; color: #00ff9d; padding: 6px 16px; cursor: pointer; border-radius: 4px; }
 .add-btn { background: #161618; border: 1px solid #27272a; color: #fff; padding: 0 12px; cursor: pointer; border-radius: 4px; height: 32px; }
 
-/* ПОЛОСКА РАЗДЕЛИТЕЛЬ */
-.sub-header-line { 
-  border-top: 1px solid #1f1f22; 
-  height: 60px; 
+.sub-header-line {
+  border-top: 1px solid #1f1f22;
+  height: 60px;
   display: flex;
   align-items: center;
   position: relative;
 }
 
-/* КНОПКА ФИЛЬТРОВ */
+/* ФИЛЬТРЫ */
 .filter-toggle-btn-main {
-  background: #161618;
-  border: 1px solid #27272a;
-  color: #00ff9d;
-  padding: 10px 24px;
-  font-size: 12px;
-  cursor: pointer;
-  border-radius: 4px;
-  text-transform: uppercase;
-  font-weight: 800;
-  letter-spacing: 1px;
+  background: #161618; border: 1px solid #27272a; color: #00ff9d;
+  padding: 10px 24px; font-size: 12px; cursor: pointer; border-radius: 4px;
+  text-transform: uppercase; font-weight: 800; letter-spacing: 1px;
 }
 .filter-toggle-btn-main.active { background: #00ff9d; color: #000; }
 
-/* ВЕРТИКАЛЬНЫЙ СПИСОК */
-.vertical-dropdown {
-  position: absolute;
-  top: 55px;
-  left: 0;
-  z-index: 1000;
-  background: #111113;
-  padding: 24px;
-  border-radius: 6px;
-  border: 1px solid #00ff9d;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.9);
-  min-width: 420px;
-  max-height: 80vh;
-  overflow-y: auto;
-}
+.dropdown-container { position: relative; }
 
+.vertical-dropdown {
+  position: absolute; top: 55px; left: 0; z-index: 1000;
+  background: #111113; padding: 24px; border-radius: 6px;
+  border: 1px solid #00ff9d; box-shadow: 0 20px 60px rgba(0,0,0,0.9);
+  min-width: 420px; max-height: 80vh; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: #333 transparent;
+}
 .f-vert-stack { display: flex; flex-direction: column; gap: 20px; }
 .f-vert-item { display: flex; flex-direction: column; gap: 8px; }
-
-/* ПОДПИСИ НАД ИНПУТАМИ */
-.input-row-vert { 
-  display: flex; gap: 10px; 
-}
-.input-with-hint {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 1;
-}
-.hint {
-  font-size: 9px;
-  color: #71717a;
-  text-transform: uppercase;
-  font-weight: 700;
-}
+.input-row-vert { display: flex; gap: 10px; }
+.input-with-hint { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.hint { font-size: 9px; color: #71717a; text-transform: uppercase; font-weight: 700; }
 .input-with-hint input {
-  width: 100%;
-  background: #000;
-  border: 1px solid #333;
-  color: #fff;
-  padding: 7px;
-  font-size: 12px;
-  text-align: center;
-  border-radius: 4px;
-  outline: none;
+  width: 100%; background: #000; border: 1px solid #333; color: #fff;
+  padding: 7px; font-size: 12px; text-align: center; border-radius: 4px; outline: none;
 }
 .input-with-hint input:focus { border-color: #00ff9d; }
 .p-in { color: #00ff9d !important; }
 
-/* СТАТИЧНЫЕ ФИЛЬТРЫ ОСНОВНОЙ ВКЛАДКИ - ИЗМЕНЕНО ДЛЯ ОДИНАКОВЫХ РАЗМЕРОВ */
-.filters-area-static .f-row { 
-  display: flex; 
-  gap: 20px; 
-  width: 100%;
+/* СТАТИЧНЫЕ ФИЛЬТРЫ */
+.filters-area-static .f-row { display: flex; gap: 20px; width: 100%; }
+.filters-area-static .f-group { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
+.filters-area-static .f-label {
+  font-size: 11px; color: #fff; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-
-.filters-area-static .f-group { 
-  display: flex; 
-  flex-direction: column; 
-  gap: 4px; 
-  flex: 1; /* Делаем все группы одинаковой ширины */
-  min-width: 0; /* Чтобы текст не выходил за границы */
-}
-
-.filters-area-static .f-label { 
-  font-size: 11px; 
-  color: #fff; 
-  font-weight: 700; 
-  text-transform: uppercase; 
-  letter-spacing: 0.5px; 
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.filters-area-static .input-row { 
-  background: #161618; 
-  border: 1px solid #27272a; 
-  padding: 4px; 
-  border-radius: 4px; 
-  width: 100%; /* Занимает всю доступную ширину группы */
-}
-
-.filters-area-static .input-row input { 
-  background: transparent; 
-  border: none; 
-  color: #fff; 
-  width: 100%; /* Полная ширина вместо фиксированной 80px */
-  text-align: center; 
-  font-size: 12px; 
-  outline: none;
-  padding: 4px 0;
+.filters-area-static .input-row { background: #161618; border: 1px solid #27272a; padding: 4px; border-radius: 4px; width: 100%; }
+.filters-area-static .input-row input {
+  background: transparent; border: none; color: #fff; width: 100%;
+  text-align: center; font-size: 12px; outline: none; padding: 4px 0;
 }
 
 /* СЕТКА */
-.grid-box { 
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; padding: 20px; 
+.grid-box {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 15px;
+  padding: 20px;
+  align-items: start;
 }
-.chart-card { background: #0d0d0f; border: 1px solid #1f1f22; border-radius: 8px; overflow: hidden; }
-.chart-header { display: flex; justify-content: space-between; padding: 10px 15px; background: #161618; border-bottom: 1px solid #1f1f22; }
-.symbol-name { color: #00ff9d; font-weight: 700; font-size: 15px; }
-.chart-relative-container { position: relative; width: 100%; height: 400px; }
 
-.info-overlay { 
-  position: absolute; top: 12px; left: 12px; z-index: 10; font-size: 11px; 
-  background: rgba(0,0,0,0.85); padding: 10px; border-radius: 4px; 
+/* ВИРТУАЛЬНЫЙ ПЛЕЙСХОЛДЕР — всегда держит место в сетке */
+.chart-card-virtual {
+  min-height: 448px;
+  border-radius: 8px;
+  background: #0d0d0f;
+  border: 1px solid #1f1f22;
+  overflow: hidden;
+}
+
+/* КАРТОЧКА ГРАФИКА */
+.chart-card {
+  background: #0d0d0f;
+  border: 1px solid #1f1f22;
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+/* ПОЛНОЭКРАННАЯ ВЕРСИЯ КАРТОЧКИ (внутри оверлея) */
+.chart-card-fullscreen {
+  border-radius: 0;
+  border: none;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* ОВЕРЛЕЙ ПОЛНОЭКРАННОГО РЕЖИМА — рендерится поверх всего, НЕ внутри сетки */
+/* Это ключевой фикс: сетка при этом остаётся нетронутой */
+.fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: #0d0d0f;
+}
+
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 15px;
+  background: #161618;
+  border-bottom: 1px solid #1f1f22;
+  flex-shrink: 0;
+  height: 48px;
+}
+.symbol-name { color: #00ff9d; font-weight: 700; font-size: 15px; }
+
+.tf-selector-mini { display: flex; flex: 1; justify-content: center; }
+.tf-btn-mini {
+  background: #000; border: 1px solid #333; color: #fff; font-size: 10px;
+  margin-left: 4px; cursor: pointer; padding: 3px 7px; border-radius: 3px;
+}
+.tf-btn-mini.active { border-color: #00ff9d; color: #00ff9d; }
+
+/* КНОПКА ПОЛНОЭКРАННОГО РЕЖИМА */
+.fullscreen-btn {
+  background: transparent; border: 1px solid #333; color: #a1a1aa;
+  width: 26px; height: 26px; cursor: pointer; border-radius: 4px;
+  font-size: 14px; display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; transition: border-color 0.15s, color 0.15s; margin-left: 8px;
+}
+.fullscreen-btn:hover { border-color: #00ff9d; color: #00ff9d; }
+
+.chart-relative-container { position: relative; width: 100%; }
+
+.info-overlay {
+  position: absolute; top: 12px; left: 12px; z-index: 10; font-size: 11px;
+  background: rgba(0,0,0,0.85); padding: 10px; border-radius: 4px;
   border: 1px solid #333; line-height: 1.6; color: #eee; pointer-events: none;
 }
-.green { color: #00ff9d; } .red { color: #ff3b3b; }
-.tf-btn-mini { background: #000; border: 1px solid #333; color: #fff; font-size: 10px; margin-left: 4px; cursor: pointer; padding: 3px 7px; border-radius: 3px; }
-.tf-btn-mini.active { border-color: #00ff9d; color: #00ff9d; }
+.green { color: #00ff9d; }
+.red { color: #ff3b3b; }
 
 a[href*="tradingview"], div[class*="tv-lightweight-charts-logo"] { display: none !important; }
 
 @media (max-width: 1400px) { .grid-box { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 900px) { .grid-box { grid-template-columns: 1fr; } }
-/* ЭФФЕКТ ЗАГРУЗКИ КАРТОЧКИ */
-.chart-loader {
-  position: absolute;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
-  background: #0d0d0f;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
 
-/* Сетка на фоне лоадера */
+/* ЭФФЕКТ ЗАГРУЗКИ */
+.chart-loader {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  background: #0d0d0f; z-index: 100; display: flex;
+  align-items: center; justify-content: center; overflow: hidden;
+}
 .chart-loader::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image: 
-    linear-gradient(rgba(0, 255, 157, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 255, 157, 0.05) 1px, transparent 1px);
+  content: ""; position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(0,255,157,0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,255,157,0.05) 1px, transparent 1px);
   background-size: 20px 20px;
 }
-
-/* Бегущая линия сканера */
 .scanner-line {
-  position: absolute;
-  top: 0; left: 0;
-  width: 100%;
-  height: 4px;
-  background: #00ff9d;
-  box-shadow: 0 0 20px #00ff9d, 0 0 40px #00ff9d;
-  animation: scanMove 2s ease-in-out infinite;
-  z-index: 101;
+  position: absolute; top: 0; left: 0; width: 100%; height: 4px;
+  background: #00ff9d; box-shadow: 0 0 20px #00ff9d, 0 0 40px #00ff9d;
+  animation: scanMove 2s ease-in-out infinite; z-index: 101;
 }
-
-.loader-info {
-  text-align: center;
-  z-index: 102;
-}
-
-.loader-ticker {
-  font-size: 28px;
-  font-weight: 900;
-  color: #fff;
-  letter-spacing: 4px;
-  text-shadow: 0 0 10px rgba(0, 255, 157, 0.5);
-  margin-bottom: 5px;
-}
-
-.loader-status {
-  font-size: 9px;
-  color: #00ff9d;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  opacity: 0.8;
-}
-
-/* Размытие графика при загрузке */
-.blurred {
-  filter: blur(5px);
-  opacity: 0.3;
-}
+.loader-info { text-align: center; z-index: 102; }
+.loader-ticker { font-size: 28px; font-weight: 900; color: #fff; letter-spacing: 4px; text-shadow: 0 0 10px rgba(0,255,157,0.5); margin-bottom: 5px; }
+.loader-status { font-size: 9px; color: #00ff9d; letter-spacing: 2px; text-transform: uppercase; opacity: 0.8; }
+.blurred { filter: blur(5px); opacity: 0.3; }
 
 @keyframes scanMove {
-  0% { top: 0%; opacity: 0; }
-  20% { opacity: 1; }
-  80% { opacity: 1; }
+  0%   { top: 0%;   opacity: 0; }
+  20%  { opacity: 1; }
+  80%  { opacity: 1; }
   100% { top: 100%; opacity: 0; }
 }
-/* Ряд кнопок управления */
-.controls-row {
-  display: flex;
-  gap: 10px;
-}
 
-/* Общий скролл для длинных списков */
-.vertical-dropdown {
-  max-height: 85vh;
-  scrollbar-width: thin;
-  scrollbar-color: #333 transparent;
-}
-.sort-box {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-right: 15px;
-}
-
-.sort-label {
-  font-size: 11px;
-  color: #71717a;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
+.controls-row { display: flex; gap: 10px; }
+.sort-box { display: flex; align-items: center; gap: 8px; margin-right: 15px; }
+.sort-label { font-size: 11px; color: #71717a; text-transform: uppercase; letter-spacing: 0.5px; }
