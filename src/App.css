@@ -1,7 +1,7 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-serif; }
 
-.app-container { width: 100vw; display: flex; flex-direction: column; }
+.app-container { width: 100vw; min-height: 100vh; display: flex; flex-direction: column; justify-content: flex-start; }
 
 /* ─── ШАПКА ────────────────────────────────────────────────────────────────── */
 .main-header {
@@ -207,8 +207,8 @@ body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-se
 
 /* ─── СЕТКА ГРАФИКОВ ────────────────────────────────────────────────────────── */
 .grid-box { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; padding: 20px; align-content: start; }
-.chart-card-virtual { min-height: 0; }
-.chart-card { background: #0d0d0f; border: 1px solid #1f1f22; border-radius: 8px; overflow: hidden; }
+.chart-card-virtual { height: 447px; }
+.chart-card { background: #0d0d0f; border: 1px solid #1f1f22; border-radius: 8px; overflow: hidden; height: 100%; }
 .chart-card-fullscreen { width: 100vw !important; height: 100vh !important; position: relative; border-radius: 0; }
 .chart-header { display: flex; justify-content: space-between; padding: 10px 15px; background: #161618; border-bottom: 1px solid #1f1f22; align-items: center; }
 .symbol-name { color: #00ff9d; font-weight: 700; font-size: 15px; }
@@ -306,6 +306,23 @@ body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-se
 /* ─── МЕДИА ─────────────────────────────────────────────────────────────────── */
 @media (max-width: 1400px) { .grid-box { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 900px) { .grid-box { grid-template-columns: 1fr; } }
+
+/* ─── OHLCV СТРОКА В ШАПКЕ КАРТОЧКИ ────────────────────────────────────────── */
+.ohlcv-bar {
+  display: flex; align-items: center; gap: 5px;
+  padding: 0 15px; background: #111113; border-bottom: 1px solid #1f1f22;
+  font-size: 11px; overflow: hidden; white-space: nowrap; pointer-events: none;
+  height: 0; opacity: 0; transition: height 0.12s ease, opacity 0.12s ease;
+}
+.ohlcv-bar-visible { height: 26px; opacity: 1; }
+.ohlcv-label { color: #555; font-weight: 700; font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
+.ohlcv-val   { color: #ddd; font-weight: 600; font-variant-numeric: tabular-nums; margin-right: 4px; }
+.ohlcv-high  { color: #00ff9d; }
+.ohlcv-low   { color: #ff3b3b; }
+.ohlcv-green { color: #00ff9d; }
+.ohlcv-red   { color: #ff3b3b; }
+.ohlcv-vol   { color: #a0a0c0; }
+.ohlcv-sep   { color: #333; font-size: 13px; margin: 0 4px; }
 
 /* ─── СКРЫТЬ ЛОГОТИП TRADINGVIEW ────────────────────────────────────────────── */
 a[href*="tradingview"], div[class*="tv-lightweight-charts-logo"] { display: none !important; }
