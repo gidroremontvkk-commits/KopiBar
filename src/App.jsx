@@ -126,18 +126,19 @@ async function fetchKlines(exchange, symbol, tf) {
 
 // ─── Расчёты ──────────────────────────────────────────────────────────────────
 const calculateCorrelation = (data) => {
-  if (data.length < 2) return 0;
+  if (data.length < 2) return null;
   const x=[], y=[];
   for (let i=1; i<data.length; i++) {
     if (!data[i].btcClose || !data[i-1].btcClose) continue;
     x.push((data[i].close - data[i-1].close) / data[i-1].close);
     y.push((data[i].btcClose - data[i-1].btcClose) / data[i-1].btcClose);
   }
-  if (!x.length) return 0;
+  // Не хватает пар (нет BTC данных или не совпали временны́е метки) → не можем посчитать
+  if (x.length < 5) return null;
   const n=x.length, mx=x.reduce((a,b)=>a+b,0)/n, my=y.reduce((a,b)=>a+b,0)/n;
   let num=0, dx2=0, dy2=0;
   for (let i=0;i<n;i++) { const dx=x[i]-mx, dy=y[i]-my; num+=dx*dy; dx2+=dx*dx; dy2+=dy*dy; }
-  if (!dx2||!dy2) return 0;
+  if (!dx2||!dy2) return null;
   return (num/Math.sqrt(dx2*dy2))*100;
 };
 
@@ -166,25 +167,39 @@ const calculateVolatility = (data, periodHours, tfMin) => {
 };
 
 // Посчитать NATR/волат/корр для одного символа по сырым данным
+// Возвращает null только при критической ошибке (нет данных)
+// corr может быть null если btcMap недоступен или метки не совпадают
 function computeStats(rawData, btcMap, filters, tfMin, symbol) {
   if (!rawData || rawData.length < 2) return null;
   const lastPrice = rawData[rawData.length-1].close;
+  if (!lastPrice) return null;
   const natr  = calculateNATR(rawData, filters.natrPeriod||2, tfMin, lastPrice);
   const volat = calculateVolatility(rawData, filters.volatPeriod||6, tfMin);
-  let corr = 100;
-  if (!symbol.replace(/[-_].*/,'').toUpperCase().startsWith('BTC') && btcMap) {
-    const corrN = Math.max(2, Math.round(((filters.corrPeriod||1)*60)/tfMin));
+
+  let corr = null; // null = не смогли посчитать
+  if (symbol.replace(/[-_].*/,'').toUpperCase().startsWith('BTC')) {
+    corr = 100; // BTC всегда 100% коррелирует сам с собой
+  } else if (btcMap) {
+    const corrN = Math.max(10, Math.round(((filters.corrPeriod||1)*60)/tfMin));
     const slice = rawData.slice(-corrN).map(d=>({ ...d, btcClose:btcMap.get(d.openTime) }));
-    corr = Math.round(calculateCorrelation(slice));
+    corr = calculateCorrelation(slice);
+    if (corr !== null) corr = Math.round(corr);
   }
   return { natr, volat, corr };
 }
 
 function passesStatsFilter(s, f) {
-  if (!s) return false;
-  return s.natr>=(f.minNatr??0) && s.natr<=(f.maxNatr??100) &&
-         s.volat>=(f.minVolat??0) && s.volat<=(f.maxVolat??100) &&
-         s.corr>=(f.minCorr??-100) && s.corr<=(f.maxCorr??100);
+  // null = ошибка загрузки → показываем монету (нет данных чтобы отфильтровать)
+  if (s === null) return true;
+  // undefined = ещё грузится → скрываем
+  if (s === undefined) return false;
+
+  const natrOk  = s.natr  >= (f.minNatr  ?? 0)    && s.natr  <= (f.maxNatr  ?? 100);
+  const volatOk = s.volat >= (f.minVolat ?? 0)    && s.volat <= (f.maxVolat ?? 100);
+  // corr=null значит нет BTC данных → пропускаем фильтр по корреляции для этой монеты
+  const corrOk  = s.corr === null || (s.corr >= (f.minCorr ?? -100) && s.corr <= (f.maxCorr ?? 100));
+
+  return natrOk && volatOk && corrOk;
 }
 
 function hasStatsFilter(f) {
@@ -240,7 +255,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
       if (!chartRef.current || !chartContainerRef.current) return;
       chartRef.current.applyOptions({
         width:  isFullscreenMode ? window.innerWidth : chartContainerRef.current.clientWidth,
-        height: isFullscreenMode ? window.innerHeight - CHART_HEADER_H : 400,
+        height: isFullscreenMode ? window.innerHeight - CHART_HEADER_H : 340,
       });
     };
     window.addEventListener('resize', h);
@@ -262,14 +277,14 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
     let cancelled = false, wsHandle = null;
 
     const w = isFullscreenMode ? window.innerWidth : (chartContainerRef.current.clientWidth || 800);
-    const h = isFullscreenMode ? window.innerHeight - CHART_HEADER_H : 400;
+    const h = isFullscreenMode ? window.innerHeight - CHART_HEADER_H : 340;
 
     const chart = LightweightCharts.createChart(chartContainerRef.current, {
       layout: { background:{ type:LightweightCharts.ColorType.Solid, color:'#0d0d0f' }, textColor:'#a1a1aa' },
       grid: { vertLines:{ visible:false }, horzLines:{ visible:false } },
       crosshair: { mode:LightweightCharts.CrosshairMode.Normal },
       rightPriceScale: { borderVisible:false, autoScale:true, minimumWidth:80 },
-      timeScale: { borderVisible:false, rightOffset:20, barSpacing:3, minBarSpacing:0, timeVisible:true, secondsVisible:false, tickMarkFormatter:timescaleFormatter },
+      timeScale: { borderVisible:false, rightOffset:60, barSpacing:3, minBarSpacing:0, timeVisible:true, secondsVisible:false, tickMarkFormatter:timescaleFormatter },
       width: w, height: h,
     });
 
@@ -299,7 +314,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
         candleSeries.applyOptions({ priceFormat:{ type:'price', ...getPriceFormat(lastPrice) } });
         volumeSeries.setData(rawData.map(d => ({ time:d.time, value:d.volume, color: d.close>=d.open ? 'rgba(0,255,157,0.5)' : 'rgba(255,59,59,0.5)' })));
         const lastIdx = rawData.length-1;
-        chart.timeScale().setVisibleRange({ from:rawData[Math.max(0,lastIdx-600)].time, to:rawData[lastIdx].time+100 });
+        chart.timeScale().scrollToRealTime();
         const tfMin = TF_MIN[localTf] || 5;
         const s = computeStats(rawData, btcMapRef.current, filters, tfMin, symbol);
         if (!cancelled && s) setStats(s);
@@ -354,7 +369,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
       </div>
 
       {/* Область графика */}
-      <div className="chart-relative-container" style={{ height: isFullscreenMode ? `calc(100vh - ${CHART_HEADER_H}px)` : '400px' }}>
+      <div className="chart-relative-container" style={{ height: isFullscreenMode ? `calc(100vh - ${CHART_HEADER_H}px)` : '340px' }}>
         {loading && (
           <div className="chart-loader">
             <div className="scanner-line"></div>
@@ -371,7 +386,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
           {parseInt(marketStats.count)>0 && <div>СДЕЛКИ <span className="stat-period">(24ч)</span>: <b>{parseInt(marketStats.count).toLocaleString()}</b></div>}
           <div>NATR <span className="stat-period">({filters.natrPeriod||2}ч)</span>: <b>{stats.natr!=null ? stats.natr.toFixed(2)+'%' : '...'}</b></div>
           <div>ВОЛАТ <span className="stat-period">({filters.volatPeriod||6}ч)</span>: <b>{stats.volat!=null ? stats.volat.toFixed(2)+'%' : '...'}</b></div>
-          <div>КОРР <span className="stat-period">({filters.corrPeriod||1}ч)</span>: <b>{stats.corr!=null ? stats.corr+'%' : '...'}</b></div>
+          <div>КОРР <span className="stat-period">({filters.corrPeriod||1}ч)</span>: <b>{stats.corr != null ? stats.corr+'%' : stats.corr === null ? '—' : '...'}</b></div>
         </div>
       </div>
     </>
@@ -552,6 +567,10 @@ function App() {
         const parsed = JSON.parse(saved);
         return parsed.map(t => {
           const f = { ...defaultFilters, ...t.filters };
+          // Основная вкладка (id=1) не имеет stats-фильтров → всегда сбрасываем в дефолт
+          if (t.id === 1) {
+            f.minNatr=0; f.maxNatr=100; f.minVolat=0; f.maxVolat=100; f.minCorr=-100; f.maxCorr=100;
+          }
           return { ...t, filters:f, appliedFilters: t.appliedFilters ? { ...defaultFilters, ...t.appliedFilters } : f };
         });
       }
@@ -632,7 +651,8 @@ function App() {
     });
   }, [marketData, activeSymbols, activeFilters, sortBy]);
 
-  // ─── Шаг 2: Загрузка статистики в фоне (только на не-первой вкладке с stats-фильтром) ─
+  // ─── Шаг 2: Загрузка статистики (только на вкладках со stats-фильтром в UI) ──
+  // Основная вкладка (id=1) не имеет UI для NATR/волат/корр → stats-фильтр не применяется
   const needStats = activeTab.id !== 1 && hasStatsFilter(activeFilters);
   const depsKey = preFilteredCoins.map(c=>c.symbol).join(',') +
     `|${activeExchange}|${activeTab.globalTf}|${activeFilters.natrPeriod}|${activeFilters.volatPeriod}|${activeFilters.corrPeriod}`;
@@ -658,8 +678,12 @@ function App() {
           try {
             const rawData = await fetchKlines(activeExchange, sym, tf);
             if (abort.cancelled) return;
+            // null = данные есть, но статистика не посчиталась → монета пройдёт фильтр (passesStatsFilter(null)=true)
             partial[sym] = computeStats(rawData, btcMap, activeFilters, tfMin, sym);
-          } catch { partial[sym] = null; }
+          } catch {
+            // При ошибке запроса тоже ставим null → монета пройдёт фильтр, не исчезнет навсегда
+            partial[sym] = null;
+          }
         }));
         if (!abort.cancelled) setStatsMap({...partial});
       }
@@ -672,10 +696,12 @@ function App() {
   // ─── Шаг 3: Итоговая фильтрация по NATR/волат/корр ───────────────────────────
   const filteredCoins = useMemo(() => {
     if (!needStats) return preFilteredCoins;
-    // Пока статистика грузится — показываем монеты у которых она уже есть и прошла фильтр
     return preFilteredCoins.filter(c => {
       const s = statsMap[c.symbol];
-      if (s === undefined) return false; // ещё не загружена
+      // undefined = ещё не загружена → скрываем (прогрессивная загрузка)
+      // null = ошибка → passesStatsFilter вернёт true (показываем)
+      // объект = посчитано → фильтруем по значениям
+      if (s === undefined) return false;
       return passesStatsFilter(s, activeFilters);
     });
   }, [preFilteredCoins, statsMap, activeFilters, needStats]);
@@ -707,7 +733,7 @@ function App() {
                 {t.id!==1 && <span className="close-x" onClick={(e)=>{ e.stopPropagation(); setTabs(tabs.filter(x=>x.id!==t.id)); setActiveTabId(1); }}>×</span>}
               </div>
             ))}
-            <button className="add-btn" onClick={()=>setTabs([...tabs,{ ...activeTab, id:Date.now(), name:'Новая', filters:{...activeTab.filters} }])}>+</button>
+            <button className="add-btn" onClick={()=>setTabs([...tabs,{ ...activeTab, id:Date.now(), name:'Новая', filters:{...activeTab.filters, minNatr:0, maxNatr:100, minVolat:0, maxVolat:100, minCorr:-100, maxCorr:100}, appliedFilters:{...activeTab.filters, minNatr:0, maxNatr:100, minVolat:0, maxVolat:100, minCorr:-100, maxCorr:100} }])}>+</button>
           </div>
 
           <div className="header-right">

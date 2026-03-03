@@ -207,7 +207,7 @@ body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-se
 
 /* ─── СЕТКА ГРАФИКОВ ────────────────────────────────────────────────────────── */
 .grid-box { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; padding: 20px; align-content: start; }
-.chart-card-virtual { height: 447px; }
+.chart-card-virtual { height: 385px; }
 .chart-card { background: #0d0d0f; border: 1px solid #1f1f22; border-radius: 8px; overflow: hidden; height: 100%; }
 .chart-card-fullscreen { width: 100vw !important; height: 100vh !important; position: relative; border-radius: 0; }
 .chart-header { display: flex; justify-content: space-between; padding: 10px 15px; background: #161618; border-bottom: 1px solid #1f1f22; align-items: center; }
