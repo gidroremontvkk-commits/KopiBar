@@ -9,7 +9,7 @@ body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-se
   padding: 12px 20px 0 20px;
   position: sticky;
   top: 0;
-  z-index: 100;
+  z-index: 300;
 }
 
 .header-top {
@@ -326,3 +326,69 @@ body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-se
 
 /* ─── СКРЫТЬ ЛОГОТИП TRADINGVIEW ────────────────────────────────────────────── */
 a[href*="tradingview"], div[class*="tv-lightweight-charts-logo"] { display: none !important; }
+/* ─── SPLIT VIEW (список + боковой график) ──────────────────────────────────── */
+.list-split-view { display: flex; flex: 1; overflow: hidden; height: calc(100vh - 100px); }
+
+.list-chart-panel { flex: 0 0 58%; border-right: 1px solid #1f1f22; overflow: hidden; }
+.list-chart-panel .chart-card { border-radius: 0; border: none; height: 100%; }
+.list-table-panel { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+.list-table-panel .coin-list-scroll { height: 100%; }
+
+/* Переопределяем для split-view */
+.list-table-panel .coin-list-scroll { height: calc(100vh - 104px); }
+.list-row.list-row-selected { background: #0d1f14 !important; box-shadow: inset 2px 0 0 #00ff9d; }
+
+/* ─── ЦВЕТ ПОМЕТКИ — SELECT ─────────────────────────────────────────────────── */
+.star-color-select-wrap {
+  display: flex; align-items: center; gap: 5px;
+  padding: 0 8px; border-left: 1px solid #222;
+}
+.star-color-preview { font-size: 15px; line-height: 1; pointer-events: none; }
+.star-color-select {
+  background: #161618; border: 1px solid #2a2a2e; color: #ccc;
+  font-size: 12px; padding: 3px 6px; border-radius: 4px; cursor: pointer;
+}
+.star-color-select:focus { outline: none; border-color: #444; }
+
+/* ─── КНОПКА ЗВЕЗДЫ НА ГРАФИКЕ ──────────────────────────────────────────────── */
+.chart-header-btns { display: flex; align-items: center; gap: 4px; }
+.chart-star-btn {
+  background: transparent; border: none; cursor: pointer; font-size: 15px;
+  padding: 2px 4px; line-height: 1; transition: transform 0.15s, filter 0.15s;
+  opacity: 0.7;
+}
+.chart-star-btn:hover { transform: scale(1.25); opacity: 1; filter: brightness(1.4); }
+
+/* ─── КНОПКА ИЗБРАННОГО + DROPDOWN ─────────────────────────────────────────── */
+.watchlist-btn-wrap { position: relative; display: flex; align-items: center; }
+.watch-drop-arrow-btn {
+  background: #161618; border: 1px solid #27272a; border-left: none;
+  color: #888; padding: 4px 6px; cursor: pointer; font-size: 10px;
+  border-radius: 0 4px 4px 0; height: 100%; transition: color 0.15s;
+}
+.watch-drop-arrow-btn:hover { color: #f0c040; }
+
+.watch-color-dropdown {
+  position: absolute; top: calc(100% + 6px); right: 0;
+  background: #111113; border: 1px solid #2a2a2e; border-radius: 8px;
+  padding: 10px; min-width: 170px;
+  z-index: 500;  /* выше чем список и шапка */
+  box-shadow: 0 8px 24px rgba(0,0,0,0.8);
+}
+.watch-color-title { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+.watch-color-opt {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: transparent; border: none; color: #aaa; font-size: 13px;
+  padding: 6px 8px; cursor: pointer; border-radius: 4px; text-align: left;
+  transition: background 0.1s;
+}
+.watch-color-opt:hover { background: #1a1a1e; color: #fff; }
+.watch-color-opt.active { background: #1a2820; color: #00ff9d; }
+.watch-drop-divider { border-top: 1px solid #1f1f22; margin: 6px 0; }
+.watch-clear-btn {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  background: transparent; border: none; color: #ff4444; font-size: 12px;
+  padding: 6px 8px; cursor: pointer; border-radius: 4px; text-align: left;
+  transition: background 0.1s;
+}
+.watch-clear-btn:hover { background: #1f1015; }
