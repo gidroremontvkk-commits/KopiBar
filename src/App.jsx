@@ -173,7 +173,7 @@ const getPriceFormat = (price) => {
 };
 
 // ─── Компонент графика ────────────────────────────────────────────────────────
-const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchange, isFullscreenMode, onFullscreen, onClose, precomputedStats, fixedHeight, watchlist, onToggleWatch, selectedStarColor }) => {
+const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchange, isFullscreenMode, onFullscreen, onClose, precomputedStats, fixedHeight, autoSize, watchlist, onToggleWatch, selectedStarColor }) => {
   const chartContainerRef = useRef();
   const chartRef = useRef(null);
   const candleSeriesRef = useRef(null);
@@ -181,6 +181,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
   const btcMapRef = useRef(btcMap);
 
   const CHEIGHT = fixedHeight || 340;
+  const useAutoSize = autoSize && !isFullscreenMode;
 
   const [localTf, setLocalTf] = useState(globalTf);
   const [stats, setStats] = useState(precomputedStats || {});
@@ -194,6 +195,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
   useEffect(() => {
     const h = () => {
       if (!chartRef.current||!chartContainerRef.current) return;
+      if (useAutoSize) return; // autoSize handles it
       chartRef.current.applyOptions({
         width: isFullscreenMode ? window.innerWidth : chartContainerRef.current.clientWidth,
         height: isFullscreenMode ? window.innerHeight - CHART_HEADER_H : CHEIGHT,
@@ -201,7 +203,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
     };
     window.addEventListener('resize', h);
     return () => window.removeEventListener('resize', h);
-  }, [isFullscreenMode, CHEIGHT]);
+  }, [isFullscreenMode, CHEIGHT, useAutoSize]);
 
   useEffect(() => {
     if (!isFullscreenMode) return;
@@ -223,7 +225,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
       crosshair: { mode:LightweightCharts.CrosshairMode.Normal },
       rightPriceScale: { borderVisible:false, autoScale:true, minimumWidth:80 },
       timeScale: { borderVisible:false, rightOffset:60, barSpacing:3, minBarSpacing:0, timeVisible:true, secondsVisible:false, tickMarkFormatter:timescaleFormatter },
-      width:w, height:h,
+      ...(useAutoSize ? { autoSize:true } : { width:w, height:h }),
     });
 
     const candleSeries = chart.addCandlestickSeries({ upColor:'#00ff9d', downColor:'#ff3b3b', borderVisible:false, wickUpColor:'#00ff9d', wickDownColor:'#ff3b3b' });
@@ -295,7 +297,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
           <span className="ohlcv-label">Объём</span><span className="ohlcv-val ohlcv-vol">{fmtVol(crosshair.volume)}</span>
         </>}
       </div>
-      <div className="chart-relative-container" style={{ height: isFullscreenMode ? `calc(100vh - ${CHART_HEADER_H}px)` : `${CHEIGHT}px` }}>
+      <div className="chart-relative-container" style={ useAutoSize ? {flex:1,minHeight:0} : { height: isFullscreenMode ? `calc(100vh - ${CHART_HEADER_H}px)` : `${CHEIGHT}px` } }>
         {loading && <div className="chart-loader"><div className="scanner-line"></div><div className="loader-info"><div className="loader-ticker">{symbol.replace(/[-_]?USDT.*/i,'')}</div><div className="loader-status">DECODING DATA...</div></div></div>}
         <div className={`chart-anchor ${loading?'blurred':''}`} ref={chartContainerRef} />
         <div className="info-overlay">
@@ -421,7 +423,7 @@ const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor
             isFullscreenMode={false}
             onFullscreen={null}
             precomputedStats={statsMap[chartCoin.symbol]||null}
-            fixedHeight={window.innerHeight - 221}
+            autoSize={true}
             watchlist={watchlist}
             onToggleWatch={onToggleWatch}
             selectedStarColor={selectedStarColor}
@@ -523,10 +525,14 @@ function App() {
   });
 
   const [selectedStarColor, setSelectedStarColor] = useState('yellow');
-  const [watchColorFilter, setWatchColorFilter]   = useState(null); // null = все цвета
+  const [watchColorFilter, setWatchColorFilter]   = useState(null);
   const [watchDropOpen, setWatchDropOpen]          = useState(false);
-  const watchDropRef = useRef(null);
-  const dropdownRef  = useRef(null);
+  const [watchDropPos,  setWatchDropPos]           = useState({top:0,left:0});
+  const [starColorOpen, setStarColorOpen]          = useState(false);
+  const [starColorPos,  setStarColorPos]           = useState({top:0,left:0});
+  const watchDropRef  = useRef(null);
+  const starColorRef  = useRef(null);
+  const dropdownRef   = useRef(null);
   const statsAbortRef = useRef({cancelled:false});
 
   const [tabs, setTabs] = useState(() => {
@@ -552,7 +558,7 @@ function App() {
 
   // Закрыть watch dropdown при клике снаружи
   useEffect(() => {
-    const h=(e)=>{ if(watchDropRef.current&&!watchDropRef.current.contains(e.target)) setWatchDropOpen(false); };
+    const h=(e)=>{ if(watchDropRef.current&&!watchDropRef.current.contains(e.target)) setWatchDropOpen(false); if(starColorRef.current&&!starColorRef.current.contains(e.target)) setStarColorOpen(false); };
     document.addEventListener('mousedown',h); return ()=>document.removeEventListener('mousedown',h);
   }, []);
   useEffect(() => {
@@ -699,32 +705,24 @@ function App() {
                   <span className="view-btn-icon" style={{color:watchColorFilter?starHex(watchColorFilter):'#f0c040'}}>★</span>
                   <span className="view-btn-label">Избранное{watchlistSize>0?` (${watchlistSize})`:''}</span>
                 </button>
-                <button className="watch-drop-arrow-btn" onClick={()=>setWatchDropOpen(o=>!o)} title="Фильтр по цвету">▾</button>
-                {watchDropOpen&&(
-                  <div className="watch-color-dropdown">
-                    <div className="watch-color-title">Показать цвет:</div>
-                    <button className={`watch-color-opt ${!watchColorFilter?'active':''}`} onClick={()=>{setWatchColorFilter(null);setWatchDropOpen(false);}}>
-                      <span style={{color:'#aaa'}}>★</span> Все цвета
-                    </button>
-                    {STAR_COLORS.map(sc=>(
-                      <button key={sc.key} className={`watch-color-opt ${watchColorFilter===sc.key?'active':''}`}
-                        onClick={()=>{setWatchColorFilter(sc.key);setWatchDropOpen(false);}}>
-                        <span style={{color:sc.hex}}>★</span> {sc.label}
-                      </button>
-                    ))}
-                    <div className="watch-drop-divider"/>
-                    <button className="watch-clear-btn" onClick={()=>{clearWatchlist();setWatchDropOpen(false);}}>✕ Очистить все</button>
-                  </div>
-                )}
+                <button className="watch-drop-arrow-btn" onClick={(e)=>{
+                  const r=e.currentTarget.getBoundingClientRect();
+                  setWatchDropPos({top:r.bottom+4, left:r.left + r.width/2});
+                  setWatchDropOpen(o=>!o);
+                }} title="Фильтр по цвету">▾</button>
               </div>
             </div>
 
-            {/* Выбор цвета для пометки — select */}
-            <div className="star-color-select-wrap">
-              <span className="star-color-preview" style={{color:starHex(selectedStarColor)}}>★</span>
-              <select className="star-color-select" value={selectedStarColor} onChange={e=>setSelectedStarColor(e.target.value)}>
-                {STAR_COLORS.map(sc=><option key={sc.key} value={sc.key}>{sc.label}</option>)}
-              </select>
+            {/* Выбор цвета для пометки */}
+            <div className="star-color-select-wrap" ref={starColorRef}>
+              <button className="star-color-btn" onClick={()=>{
+                const r=starColorRef.current?.getBoundingClientRect();
+                if(r) setStarColorPos({top:r.bottom+4, left:r.left});
+                setStarColorOpen(o=>!o);
+              }} title="Цвет пометки">
+                <span style={{color:starHex(selectedStarColor),fontSize:16}}>★</span>
+                <span className="star-color-arrow">▾</span>
+              </button>
             </div>
 
             <div className="results-count">
@@ -836,6 +834,37 @@ function App() {
             />
           ))}
         </div>
+      )}
+
+      {/* Порталы — рендерятся поверх всего в document.body */}
+      {watchDropOpen && ReactDOM.createPortal(
+        <div className="watch-color-dropdown portal-dropdown" style={{top:watchDropPos.top, left:watchDropPos.left, transform:'translateX(-50%)'}}
+          onMouseDown={e=>e.stopPropagation()}>
+          <button className={`watch-color-opt ${!watchColorFilter?'active':''}`} onClick={()=>{setWatchColorFilter(null);setWatchDropOpen(false);}}>
+            Все
+          </button>
+          {STAR_COLORS.map(sc=>(
+            <button key={sc.key} className={`watch-color-opt ${watchColorFilter===sc.key?'active':''}`}
+              onClick={()=>{setWatchColorFilter(sc.key);setWatchDropOpen(false);}}>
+              <span style={{color:sc.hex,fontSize:15}}>★</span>
+            </button>
+          ))}
+        </div>,
+        document.body
+      )}
+
+      {starColorOpen && ReactDOM.createPortal(
+        <div className="star-color-dropdown portal-dropdown" style={{top:starColorPos.top, left:starColorPos.left}}
+          onMouseDown={e=>e.stopPropagation()}>
+          {STAR_COLORS.map(sc=>(
+            <button key={sc.key}
+              className={`star-color-opt2 ${selectedStarColor===sc.key?'active':''}`}
+              onClick={()=>{setSelectedStarColor(sc.key);setStarColorOpen(false);}}
+              title={sc.label}
+            ><span style={{color:sc.hex,fontSize:18}}>★</span></button>
+          ))}
+        </div>,
+        document.body
       )}
     </div>
   );
