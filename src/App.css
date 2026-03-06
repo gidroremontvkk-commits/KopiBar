@@ -406,7 +406,9 @@ a[href*="tradingview"], div[class*="tv-lightweight-charts-logo"] { display: none
 .watch-color-opt:hover { background: #1a1a1e; color: #fff; }
 .watch-color-opt.active { background: #1a2820; color: #00ff9d; }
 .watch-drop-sep { width: 1px; height: 18px; background: #2a2a2e; margin: 0 3px; flex-shrink: 0; }
-.watch-drop-divider { border-top: 1px solid #1f1f22; margin: 6px 0; }
+.watch-drop-divider { border-top: 1px solid #1f1f22; margin: 2px 0; }
+.watch-clear-opt { color: #ff4444 !important; }
+.watch-clear-opt:hover { background: #1f1015 !important; color: #ff6666 !important; }
 .watch-clear-btn {
   display: flex; align-items: center; gap: 6px; width: 100%;
   background: transparent; border: none; color: #ff4444; font-size: 12px;

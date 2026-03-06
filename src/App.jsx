@@ -849,6 +849,8 @@ function App() {
               <span style={{color:sc.hex,fontSize:15}}>★</span>
             </button>
           ))}
+          <div className="watch-drop-divider"/>
+          <button className="watch-color-opt watch-clear-opt" onClick={()=>{clearWatchlist();setWatchDropOpen(false);}}>✕</button>
         </div>,
         document.body
       )}
