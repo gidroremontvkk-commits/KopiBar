@@ -468,8 +468,7 @@ const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor
                       >★</button>
                     </td>
                     <td className="list-symbol">
-                      {coin.symbol.replace(/[-_]?USDT.*/i,'')}
-                      <span className="list-full">{coin.symbol}</span>
+                      {coin.symbol.replace(/[-_]?(USDT|BUSD|USDC).*$/i, '') + 'USDT.P'}
                     </td>
                     <td>{parseFloat(coin.price).toPrecision(5)}</td>
                     <td className={chg>=0?'green':'red'}>{chg>0?'+':''}{chg.toFixed(2)}%</td>
@@ -817,7 +816,8 @@ function App() {
       )}
 
       {(viewMode==='charts'||viewMode==='watchlist') && (
-        <div className="grid-box">
+        <div className="grid-scroll">
+          <div className="grid-box">
           {displayCoins.map(c=>(
             <VirtualChartCard
               key={`${activeExchange}-${c.symbol}`}
@@ -833,6 +833,7 @@ function App() {
               selectedStarColor={selectedStarColor}
             />
           ))}
+        </div>
         </div>
       )}
 

@@ -1,7 +1,7 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-serif; }
 
-.app-container { width: 100vw; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+.app-container { width: 100vw; height: 100vh; display: flex; flex-direction: column; }
 
 /* ─── ШАПКА ────────────────────────────────────────────────────────────────── */
 .main-header {
@@ -208,6 +208,7 @@ body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-se
 
 /* ─── СЕТКА ГРАФИКОВ ────────────────────────────────────────────────────────── */
 .grid-box { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; padding: 20px; align-content: start; }
+.grid-scroll { flex: 1; overflow-y: auto; min-height: 0; }
 .chart-card-virtual { height: 385px; }
 .chart-card { background: #0d0d0f; border: 1px solid #1f1f22; border-radius: 8px; overflow: hidden; height: 100%; }
 .chart-card-fullscreen { width: 100vw !important; height: 100vh !important; position: relative; border-radius: 0; }
@@ -328,7 +329,7 @@ body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-se
 /* ─── СКРЫТЬ ЛОГОТИП TRADINGVIEW ────────────────────────────────────────────── */
 a[href*="tradingview"], div[class*="tv-lightweight-charts-logo"] { display: none !important; }
 /* ─── SPLIT VIEW (список + боковой график) ──────────────────────────────────── */
-.list-split-view { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.list-split-view { display: flex; flex: 1; min-height: 0; overflow: hidden; height: calc(100vh - 100px); }
 
 .list-chart-panel { flex: 0 0 58%; border-right: 1px solid #1f1f22; display: flex; flex-direction: column; overflow: hidden; }
 .list-chart-panel .chart-card { border-radius: 0; border: none; flex: 1; min-height: 0; display: flex; flex-direction: column; }
