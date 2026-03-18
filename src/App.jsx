@@ -192,6 +192,15 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
   useEffect(() => { setLocalTf(globalTf); }, [globalTf]);
   useEffect(() => { if (precomputedStats) setStats(precomputedStats); }, [precomputedStats]);
 
+  // Пересчитываем stats при изменении периодов фильтров — берём данные из кеша
+  useEffect(() => {
+    const cached = klinesCache.get(`${exchange}:${symbol}:${localTf}`);
+    if (!cached || !cached.length) return;
+    const tfMin = TF_MIN[localTf] || 5;
+    const s = computeStats(cached, btcMapRef.current, filters, tfMin, symbol);
+    if (s) setStats(s);
+  }, [filters.natrPeriod, filters.volatPeriod, filters.corrPeriod, symbol, exchange, localTf]); // eslint-disable-line
+
   useEffect(() => {
     const h = () => {
       if (!chartRef.current||!chartContainerRef.current) return;
@@ -262,6 +271,15 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
 
     return () => { cancelled=true; if(wsHandle) wsHandle.close(); candleSeriesRef.current=null; volumeSeriesRef.current=null; chartRef.current=null; try{chart.remove();}catch{} };
   }, [localTf, symbol, exchange, isFullscreenMode, CHEIGHT]); // eslint-disable-line
+
+  // Пересчёт stats при изменении периодов фильтров (без перезагрузки графика)
+  useEffect(() => {
+    const cached = klinesCache.get(`${exchange}:${symbol}:${localTf}`);
+    if (!cached || !cached.length) return;
+    const tfMin = TF_MIN[localTf]||5;
+    const s = computeStats(cached, btcMapRef.current, filters, tfMin, symbol);
+    if (s) setStats(s);
+  }, [filters.natrPeriod, filters.volatPeriod, filters.corrPeriod, filters.minNatr, filters.maxNatr, filters.minVolat, filters.maxVolat, filters.minCorr, filters.maxCorr]); // eslint-disable-line
 
   const fmtPrice = (v) => v.toFixed(Math.min(getPriceFormat(v).precision+2, 8));
   const fmtVol   = (v) => v>=1e6?(v/1e6).toFixed(2)+'M':v>=1e3?(v/1e3).toFixed(1)+'K':v.toFixed(0);
@@ -361,7 +379,7 @@ const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor
     if (!coins.length) return;
     let cancelled = false;
     const tfMin = TF_MIN[globalTf]||5;
-    const top = [...coins].sort((a,b)=>parseFloat(b.quoteVolume)-parseFloat(a.quoteVolume)).slice(0,100);
+    const top = coins;
     const map = {};
     (async () => {
       await Promise.all(top.map(async (coin) => {
@@ -606,7 +624,16 @@ function App() {
   useEffect(() => { klinesCache.clear(); setMarketData([]); setActiveSymbols([]); setBtcMap(null); setStatsMap({}); fetchMarket(); }, [activeExchange]); // eslint-disable-line
   useEffect(() => { setBtcMap(null); fetchBtcMap(activeTab.globalTf); }, [activeTab.globalTf, fetchBtcMap]);
 
-  const updateF      = (key,val)=>setTabs(tabs.map(t=>t.id===activeTabId?{...t,filters:{...t.filters,[key]:Number(val)}}:t));
+  const PERIOD_KEYS = new Set(['natrPeriod','volatPeriod','corrPeriod']);
+  const updateF = (key, val) => setTabs(tabs.map(t => {
+    if (t.id !== activeTabId) return t;
+    const newFilters = {...t.filters, [key]: Number(val)};
+    // периоды применяются сразу без кнопки "Применить"
+    const newApplied = PERIOD_KEYS.has(key)
+      ? {...(t.appliedFilters||t.filters), [key]: Number(val)}
+      : t.appliedFilters;
+    return {...t, filters: newFilters, ...(newApplied ? {appliedFilters: newApplied} : {})};
+  }));
   const applyFilters = ()=>setTabs(tabs.map(t=>t.id===activeTabId?{...t,appliedFilters:{...t.filters}}:t));
 
   // Шаг 1
