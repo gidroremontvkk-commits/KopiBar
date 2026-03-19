@@ -528,6 +528,7 @@ function App() {
   const [listShowAll, setListShowAll]       = useState(false);
   const [statsMap, setStatsMap]             = useState({});
   const [statsLoading, setStatsLoading]     = useState(false);
+  const [serverError, setServerError] = useState(false);
 
   // watchlist: { [symbol]: colorKey }
   const [watchlist, setWatchlist] = useState(() => {
@@ -603,12 +604,16 @@ function App() {
 
   const fetchMarket = useCallback(() => {
     setLoadingMarket(true);
+    setServerError(false);
     Promise.all([
       requestQueue(`${SERVER}/symbols?exchange=${activeExchange}`),
       requestQueue(`${SERVER}/tickers?exchange=${activeExchange}&interval=${activeTab.globalTf}`)
     ]).then(([symbols,tickers])=>{
       if(Array.isArray(symbols)) setActiveSymbols(symbols);
       if(Array.isArray(tickers)) setMarketData(tickers);
+      if(!Array.isArray(symbols)||!Array.isArray(tickers)) setServerError(true);
+    }).catch(()=>{
+      setServerError(true);
     }).finally(()=>setLoadingMarket(false));
   }, [activeExchange, activeTab.globalTf]);
 
@@ -766,11 +771,13 @@ function App() {
             </div>
 
             <div className="results-count">
-              {loadingMarket
-                ? <span className="green-accent">Загрузка...</span>
-                : analyzingCount>0
-                  ? <><span className="green-accent">Анализ...</span> <span style={{color:'#666',fontSize:'11px'}}>({preFilteredCoins.length-analyzingCount}/{preFilteredCoins.length})</span></>
-                  : <>Найдено: <span className="green-accent">{filteredCoins.length}</span>{watchlistSize>0&&<span style={{color:'#f0c040'}}> ★{watchlistSize}</span>}</>}
+              {serverError
+                ? <span style={{color:'#ff3b3b'}}>⚠ Сервер недоступен</span>
+                : loadingMarket
+                  ? <span className="green-accent">Загрузка...</span>
+                  : analyzingCount>0
+                    ? <><span className="green-accent">Анализ...</span> <span style={{color:'#666',fontSize:'11px'}}>({preFilteredCoins.length-analyzingCount}/{preFilteredCoins.length})</span></>
+                    : <>Найдено: <span className="green-accent">{filteredCoins.length}</span>{watchlistSize>0&&<span style={{color:'#f0c040'}}> ★{watchlistSize}</span>}</>}
             </div>
 
             <div className="sort-box">
@@ -834,6 +841,20 @@ function App() {
           )}
         </div>
       </header>
+
+      {serverError && (
+        <div style={{
+          background:'#1a0a0a', border:'1px solid #ff3b3b', borderRadius:6,
+          margin:'20px', padding:'16px 20px', color:'#ff6666', fontSize:13,
+          display:'flex', alignItems:'center', justifyContent:'space-between'
+        }}>
+          <span>⚠ Сервер недоступен — проверь что сервер запущен (<b>pm2 status</b>)</span>
+          <button onClick={fetchMarket} style={{
+            background:'#ff3b3b', border:'none', color:'#fff',
+            padding:'6px 14px', borderRadius:4, cursor:'pointer', fontSize:12
+          }}>Повторить</button>
+        </div>
+      )}
 
       {viewMode==='list' && (
         <CoinList
