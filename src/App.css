@@ -45,6 +45,17 @@ body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-se
 .tab-item.active { background: #00ff9d; color: #000; border-color: #00ff9d; font-weight: 600; }
 .close-x { color: #ff3b3b; font-weight: bold; }
 .edit-icon { font-size: 11px; opacity: 0.5; cursor: pointer; margin-left: 5px; }
+.tab-name-input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #00ff9d;
+  color: #000;
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+  width: 80px;
+  padding: 0 2px;
+}
 
 .header-right {
   display: flex;

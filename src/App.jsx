@@ -568,6 +568,9 @@ function App() {
   });
 
   const [activeTabId, setActiveTabId] = useState(() => { try{return Number(localStorage.getItem('kopibar_active_tab'))||1;}catch{return 1;} });
+  const [editingTabId, setEditingTabId] = useState(null);
+  const [editingTabName, setEditingTabName] = useState('');
+  const [confirmClear, setConfirmClear] = useState(false);
 
   useEffect(() => { try{localStorage.setItem('kopibar_tabs',JSON.stringify(tabs));}catch{} }, [tabs]);
   useEffect(() => { try{localStorage.setItem('kopibar_active_tab',String(activeTabId));}catch{} }, [activeTabId]);
@@ -599,7 +602,7 @@ function App() {
   }, [selectedStarColor]);
 
   const clearWatchlist = useCallback(() => {
-    if (window.confirm('Очистить все помеченные монеты?')) setWatchlist({});
+    setConfirmClear(true);
   }, []);
 
   const fetchMarket = useCallback(() => {
@@ -725,9 +728,30 @@ function App() {
 
           <div className="tabs-container">
             {tabs.map(t=>(
-              <div key={t.id} className={`tab-item ${activeTabId===t.id?'active':''}`} onClick={()=>setActiveTabId(t.id)}>
-                <span className="tab-name">{t.name}</span>
-                {t.id!==1&&<span className="edit-icon" onClick={(e)=>{e.stopPropagation();const n=prompt('Имя:',t.name);if(n)setTabs(tabs.map(x=>x.id===t.id?{...x,name:n}:x));}}>✎</span>}
+              <div key={t.id} className={`tab-item ${activeTabId===t.id?'active':''}`} onClick={()=>{if(editingTabId!==t.id)setActiveTabId(t.id);}}>
+                {editingTabId===t.id ? (
+                  <input
+                    className="tab-name-input"
+                    value={editingTabName}
+                    autoFocus
+                    onChange={e=>setEditingTabName(e.target.value)}
+                    onKeyDown={e=>{
+                      if(e.key==='Enter'){
+                        if(editingTabName.trim()) setTabs(tabs.map(x=>x.id===t.id?{...x,name:editingTabName.trim()}:x));
+                        setEditingTabId(null);
+                      }
+                      if(e.key==='Escape') setEditingTabId(null);
+                    }}
+                    onBlur={()=>{
+                      if(editingTabName.trim()) setTabs(tabs.map(x=>x.id===t.id?{...x,name:editingTabName.trim()}:x));
+                      setEditingTabId(null);
+                    }}
+                    onClick={e=>e.stopPropagation()}
+                  />
+                ) : (
+                  <span className="tab-name">{t.name}</span>
+                )}
+                {t.id!==1&&editingTabId!==t.id&&<span className="edit-icon" onClick={(e)=>{e.stopPropagation();setEditingTabId(t.id);setEditingTabName(t.name);}}>✎</span>}
                 {t.id!==1&&<span className="close-x" onClick={(e)=>{e.stopPropagation();setTabs(tabs.filter(x=>x.id!==t.id));setActiveTabId(1);}}>×</span>}
               </div>
             ))}
@@ -931,6 +955,35 @@ function App() {
           ))}
         </div>,
         document.body
+      )}
+      {confirmClear && (
+        <div style={{
+          position:'fixed', inset:0, zIndex:999999,
+          display:'flex', alignItems:'center', justifyContent:'center',
+          background:'rgba(0,0,0,0.7)'
+        }} onClick={()=>setConfirmClear(false)}>
+          <div style={{
+            background:'#111113', border:'1px solid #333', borderRadius:8,
+            padding:'24px 28px', minWidth:300, boxShadow:'0 20px 60px rgba(0,0,0,0.9)'
+          }} onClick={e=>e.stopPropagation()}>
+            <div style={{color:'#fff', fontSize:15, fontWeight:600, marginBottom:8}}>
+              Очистить избранное?
+            </div>
+            <div style={{color:'#666', fontSize:13, marginBottom:20}}>
+              Все {Object.keys(watchlist).length} помеченных монет будут удалены
+            </div>
+            <div style={{display:'flex', gap:10, justifyContent:'flex-end'}}>
+              <button onClick={()=>setConfirmClear(false)} style={{
+                background:'transparent', border:'1px solid #333', color:'#aaa',
+                padding:'7px 18px', borderRadius:5, cursor:'pointer', fontSize:13
+              }}>Отмена</button>
+              <button onClick={()=>{setWatchlist({});setConfirmClear(false);setWatchDropOpen(false);}} style={{
+                background:'#ff3b3b', border:'none', color:'#fff',
+                padding:'7px 18px', borderRadius:5, cursor:'pointer', fontSize:13, fontWeight:600
+              }}>Очистить</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
