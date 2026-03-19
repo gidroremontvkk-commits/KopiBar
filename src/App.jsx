@@ -193,13 +193,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
   useEffect(() => { if (precomputedStats) setStats(precomputedStats); }, [precomputedStats]);
 
   // Пересчитываем stats при изменении периодов фильтров — берём данные из кеша
-  useEffect(() => {
-    const cached = klinesCache.get(`${exchange}:${symbol}:${localTf}`);
-    if (!cached || !cached.length) return;
-    const tfMin = TF_MIN[localTf] || 5;
-    const s = computeStats(cached, btcMapRef.current, filters, tfMin, symbol);
-    if (s) setStats(s);
-  }, [filters.natrPeriod, filters.volatPeriod, filters.corrPeriod, symbol, exchange, localTf]); // eslint-disable-line
+ 
 
   useEffect(() => {
     const h = () => {
@@ -243,6 +237,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
     candleSeriesRef.current=candleSeries; volumeSeriesRef.current=volumeSeries; chartRef.current=chart;
 
     chart.subscribeCrosshairMove((param) => {
+      if (cancelled) return;
       if (!param.time||!param.seriesData) { setCrosshair(null); return; }
       const c=param.seriesData.get(candleSeries), v=param.seriesData.get(volumeSeries);
       if (c) setCrosshair({open:c.open,high:c.high,low:c.low,close:c.close,volume:v?.value??0});
@@ -667,7 +662,10 @@ function App() {
 
   // Шаг 2
   const needStats = activeTab.id!==1 && hasStatsFilter(activeFilters);
-  const depsKey   = preFilteredCoins.map(c=>c.symbol).join(',')+`|${activeExchange}|${activeTab.globalTf}|${activeFilters.natrPeriod}|${activeFilters.volatPeriod}|${activeFilters.corrPeriod}`;
+  const depsKey = useMemo(
+    () => preFilteredCoins.map(c => c.symbol).join(',') + `|${activeExchange}|${activeTab.globalTf}|${activeFilters.natrPeriod}|${activeFilters.volatPeriod}|${activeFilters.corrPeriod}`,
+    [preFilteredCoins, activeExchange, activeTab.globalTf, activeFilters.natrPeriod, activeFilters.volatPeriod, activeFilters.corrPeriod]
+  );
 
   useEffect(() => {
     if (!needStats||!preFilteredCoins.length) { setStatsMap({}); setStatsLoading(false); return; }
