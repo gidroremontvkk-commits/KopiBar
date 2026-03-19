@@ -100,6 +100,7 @@ body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-se
 .view-btn.active { border-color: #00ff9d; color: #00ff9d; background: #00ff9d18; }
 .view-btn-icon { font-size: 13px; line-height: 1; }
 .view-btn-label { font-size: 12px; }
+.list-show-all-btn { border-style: dashed; }
 
 /* ─── СОРТИРОВКА ────────────────────────────────────────────────────────────── */
 .sort-box { display: flex; align-items: center; gap: 8px; }

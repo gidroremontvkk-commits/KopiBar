@@ -367,11 +367,14 @@ const VirtualChartCard = (props) => {
 };
 
 // ─── Список монет + боковой график ───────────────────────────────────────────
-const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor, filters, btcMap, globalTf }) => {
-  const [sortCol, setSortCol] = useState('volume');
+const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor, filters, btcMap, globalTf, defaultSort }) => {
+  const [sortCol, setSortCol] = useState(defaultSort || 'volume');
   const [sortDir, setSortDir] = useState(-1);
   const [statsMap, setStatsMap] = useState({});
   const [selectedSymbol, setSelectedSymbol] = useState(null);
+
+  // Сброс сортировки при переключении режима "все / по фильтрам"
+  useEffect(() => { setSortCol(defaultSort || 'volume'); setSortDir(-1); }, [defaultSort]);
 
   const handleSort = (col) => { if(sortCol===col) setSortDir(d=>-d); else {setSortCol(col);setSortDir(-1);} };
 
@@ -527,6 +530,7 @@ function App() {
   const [btcMap, setBtcMap]                 = useState(null);
   const [loadingMarket, setLoadingMarket]   = useState(false);
   const [viewMode, setViewMode]             = useState('charts');
+  const [listShowAll, setListShowAll]       = useState(false);
   const [statsMap, setStatsMap]             = useState({});
   const [statsLoading, setStatsLoading]     = useState(false);
 
@@ -654,6 +658,13 @@ function App() {
     });
   }, [marketData, activeSymbols, activeFilters, sortBy]);
 
+  // Все монеты без фильтров, отсортированные по |изм%| убыванию (для "Все монеты" в списке)
+  const allCoins = useMemo(() => {
+    return marketData
+      .filter(item => activeSymbols.includes(item.symbol))
+      .sort((a,b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent));
+  }, [marketData, activeSymbols]);
+
   // Шаг 2
   const needStats = activeTab.id!==1 && hasStatsFilter(activeFilters);
   const depsKey   = preFilteredCoins.map(c=>c.symbol).join(',')+`|${activeExchange}|${activeTab.globalTf}|${activeFilters.natrPeriod}|${activeFilters.volatPeriod}|${activeFilters.corrPeriod}`;
@@ -723,7 +734,12 @@ function App() {
           <div className="header-right">
             <div className="view-toggle">
               <button className={`view-btn ${viewMode==='charts'?'active':''}`} onClick={()=>setViewMode('charts')}><span className="view-btn-icon">⊞</span><span className="view-btn-label">Графики</span></button>
-              <button className={`view-btn ${viewMode==='list'?'active':''}`}   onClick={()=>setViewMode('list')}><span className="view-btn-icon">☰</span><span className="view-btn-label">Список</span></button>
+              <button className={`view-btn ${viewMode==='list'?'active':''}`} onClick={()=>setViewMode('list')}><span className="view-btn-icon">☰</span><span className="view-btn-label">Список</span></button>
+              {viewMode==='list' && (
+                <button className={`view-btn list-show-all-btn ${listShowAll?'active':''}`} onClick={()=>setListShowAll(v=>!v)} title="Показать все монеты / только по фильтрам">
+                  {listShowAll ? 'Все монеты' : 'По фильтрам'}
+                </button>
+              )}
 
               {/* Кнопка Избранное + выпадашка цветов */}
               <div className="watchlist-btn-wrap" ref={watchDropRef}>
@@ -823,7 +839,8 @@ function App() {
 
       {viewMode==='list' && (
         <CoinList
-          coins={filteredCoins}
+          coins={listShowAll ? allCoins : filteredCoins}
+          defaultSort={listShowAll ? 'change' : 'volume'}
           exchange={activeExchange}
           watchlist={watchlist}
           onToggleWatch={toggleWatch}
