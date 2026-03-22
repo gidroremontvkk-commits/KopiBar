@@ -17,7 +17,6 @@ const timeframes = ['1m', '5m', '15m', '1h', '4h', '1d'];
 const TF_MIN = { '1m':1,'5m':5,'15m':15,'1h':60,'4h':240,'1d':1440 };
 const CHART_HEADER_H = 71;
 
-// ─── Цвета звёздочек ──────────────────────────────────────────────────────────
 const STAR_COLORS = [
   { key:'yellow', hex:'#f0c040', label:'Жёлтый'    },
   { key:'red',    hex:'#ff4444', label:'Красный'    },
@@ -28,7 +27,6 @@ const STAR_COLORS = [
 ];
 const starHex = (key) => STAR_COLORS.find(c => c.key === key)?.hex || '#f0c040';
 
-// ─── WebSocket фабрика ────────────────────────────────────────────────────────
 function createExchangeWS(exchange, symbol, interval, onCandle) {
   let ws = null, pingInterval = null;
   try {
@@ -64,14 +62,12 @@ function createExchangeWS(exchange, symbol, interval, onCandle) {
   return { close: () => { if(pingInterval) clearInterval(pingInterval); if(ws){ws.onmessage=null;ws.onerror=null;ws.onclose=null;if(ws.readyState<=1)ws.close();} } };
 }
 
-// ─── Очередь запросов ─────────────────────────────────────────────────────────
 const requestQueue = (() => {
-  let active=0; const MAX=6,queue=[];
+  let active=0; const MAX=12, queue=[];
   const run=()=>{ if(active>=MAX||!queue.length) return; active++; const{url,resolve,reject}=queue.shift(); fetch(url).then(r=>r.json()).then(resolve).catch(reject).finally(()=>{active--;run();}); };
   return (url)=>new Promise((resolve,reject)=>{ queue.push({url,resolve,reject}); run(); });
 })();
 
-// ─── Кэш свечей ──────────────────────────────────────────────────────────────
 const klinesCache = new Map();
 async function fetchKlines(exchange, symbol, tf) {
   const key=`${exchange}:${symbol}:${tf}`;
@@ -82,7 +78,6 @@ async function fetchKlines(exchange, symbol, tf) {
   return data;
 }
 
-// ─── Расчёты ──────────────────────────────────────────────────────────────────
 const calculateCorrelation = (data) => {
   if (data.length < 2) return null;
   const x=[], y=[];
@@ -91,7 +86,7 @@ const calculateCorrelation = (data) => {
     x.push((data[i].close - data[i-1].close) / data[i-1].close);
     y.push((data[i].btcClose - data[i-1].btcClose) / data[i-1].btcClose);
   }
-  if (x.length < 5) return null;
+  if (x.length < 2) return null;
   const n=x.length, mx=x.reduce((a,b)=>a+b,0)/n, my=y.reduce((a,b)=>a+b,0)/n;
   let num=0, dx2=0, dy2=0;
   for (let i=0;i<n;i++){const dx=x[i]-mx,dy=y[i]-my;num+=dx*dy;dx2+=dx*dx;dy2+=dy*dy;}
@@ -149,7 +144,6 @@ function hasStatsFilter(f) {
   return (f.minNatr??0)>0||(f.maxNatr??100)<100||(f.minVolat??0)>0||(f.maxVolat??100)<100||(f.minCorr??-100)>-100||(f.maxCorr??100)<100;
 }
 
-// ─── Форматтеры ───────────────────────────────────────────────────────────────
 const timescaleFormatter = (time, tickMarkType) => {
   const date=new Date(time*1000), pad=n=>String(n).padStart(2,'0');
   const months=['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
@@ -172,35 +166,45 @@ const getPriceFormat = (price) => {
   return               {precision:8,minMove:0.00000001};
 };
 
+function mergeCandles(older, newer) {
+  const seen = new Set();
+  return [...older, ...newer]
+    .filter(c => { if (seen.has(c.time)) return false; seen.add(c.time); return true; })
+    .sort((a, b) => a.time - b.time);
+}
+
 // ─── Компонент графика ────────────────────────────────────────────────────────
 const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchange, isFullscreenMode, onFullscreen, onClose, precomputedStats, fixedHeight, autoSize, watchlist, onToggleWatch, selectedStarColor }) => {
   const chartContainerRef = useRef();
-  const chartRef = useRef(null);
-  const candleSeriesRef = useRef(null);
-  const volumeSeriesRef = useRef(null);
-  const btcMapRef = useRef(btcMap);
+  const chartRef          = useRef(null);
+  const candleSeriesRef   = useRef(null);
+  const volumeSeriesRef   = useRef(null);
+  const btcMapRef         = useRef(btcMap);
+  const allCandlesRef     = useRef([]);
+  const isLoadingMoreRef  = useRef(false);
+  const hasMoreRef        = useRef(true);
+  const localTfRef        = useRef(globalTf);
 
   const CHEIGHT = fixedHeight || 340;
   const useAutoSize = autoSize && !isFullscreenMode;
 
-  const [localTf, setLocalTf] = useState(globalTf);
-  const [stats, setStats] = useState(precomputedStats || {});
-  const [loading, setLoading] = useState(true);
+  const [localTf, setLocalTf]     = useState(globalTf);
+  const [stats, setStats]         = useState(precomputedStats || {});
+  const [loading, setLoading]     = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [crosshair, setCrosshair] = useState(null);
 
   useEffect(() => { btcMapRef.current = btcMap; }, [btcMap]);
   useEffect(() => { setLocalTf(globalTf); }, [globalTf]);
+  useEffect(() => { localTfRef.current = localTf; }, [localTf]);
   useEffect(() => { if (precomputedStats) setStats(precomputedStats); }, [precomputedStats]);
-
-  // Пересчитываем stats при изменении периодов фильтров — берём данные из кеша
- 
 
   useEffect(() => {
     const h = () => {
       if (!chartRef.current||!chartContainerRef.current) return;
-      if (useAutoSize) return; // autoSize handles it
+      if (useAutoSize) return;
       chartRef.current.applyOptions({
-        width: isFullscreenMode ? window.innerWidth : chartContainerRef.current.clientWidth,
+        width:  isFullscreenMode ? window.innerWidth : chartContainerRef.current.clientWidth,
         height: isFullscreenMode ? window.innerHeight - CHART_HEADER_H : CHEIGHT,
       });
     };
@@ -215,16 +219,17 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
     return () => window.removeEventListener('keydown', h);
   }, [isFullscreenMode, onClose]);
 
+  // ── Создаём chart ОДИН РАЗ ──────────────────────────────────────────────────
   useEffect(() => {
     if (!chartContainerRef.current) return;
-    setLoading(true);
-    let cancelled=false, wsHandle=null;
+    let cancelled = false;
+
     const w = isFullscreenMode ? window.innerWidth : (chartContainerRef.current.clientWidth||800);
     const h = isFullscreenMode ? window.innerHeight - CHART_HEADER_H : CHEIGHT;
 
     const chart = LightweightCharts.createChart(chartContainerRef.current, {
       layout: { background:{type:LightweightCharts.ColorType.Solid,color:'#0d0d0f'}, textColor:'#a1a1aa' },
-      grid: { vertLines:{visible:false}, horzLines:{visible:false} },
+      grid:   { vertLines:{visible:false}, horzLines:{visible:false} },
       crosshair: { mode:LightweightCharts.CrosshairMode.Normal },
       rightPriceScale: { borderVisible:false, autoScale:true, minimumWidth:80 },
       timeScale: { borderVisible:false, rightOffset:60, barSpacing:3, minBarSpacing:0, timeVisible:true, secondsVisible:false, tickMarkFormatter:timescaleFormatter },
@@ -234,7 +239,10 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
     const candleSeries = chart.addCandlestickSeries({ upColor:'#00ff9d', downColor:'#ff3b3b', borderVisible:false, wickUpColor:'#00ff9d', wickDownColor:'#ff3b3b' });
     const volumeSeries = chart.addHistogramSeries({ color:'#26a69a', priceFormat:{type:'volume'}, priceScaleId:'' });
     chart.priceScale('').applyOptions({ scaleMargins:{top:0.8,bottom:0} });
-    candleSeriesRef.current=candleSeries; volumeSeriesRef.current=volumeSeries; chartRef.current=chart;
+
+    candleSeriesRef.current = candleSeries;
+    volumeSeriesRef.current = volumeSeries;
+    chartRef.current        = chart;
 
     chart.subscribeCrosshairMove((param) => {
       if (cancelled) return;
@@ -244,30 +252,95 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
       else setCrosshair(null);
     });
 
-    fetchKlines(exchange, symbol, localTf).then(rawData => {
-      if (cancelled) return;
-      if (rawData.length > 0) {
-        candleSeries.setData(rawData);
-        const lastPrice = rawData[rawData.length-1].close;
-        candleSeries.applyOptions({ priceFormat:{type:'price',...getPriceFormat(lastPrice)} });
-        volumeSeries.setData(rawData.map(d => ({ time:d.time, value:d.volume, color:d.close>=d.open?'rgba(0,255,157,0.5)':'rgba(255,59,59,0.5)' })));
-        chart.timeScale().scrollToRealTime();
-        const tfMin = TF_MIN[localTf]||5;
-        const s = computeStats(rawData, btcMapRef.current, filters, tfMin, symbol);
-        if (!cancelled && s) setStats(s);
-      }
-      if (!cancelled) setLoading(false);
-      if (!cancelled) wsHandle = createExchangeWS(exchange, symbol, localTf, (candle) => {
-        if (cancelled||!candleSeriesRef.current||!volumeSeriesRef.current) return;
-        candleSeriesRef.current.update(candle);
-        volumeSeriesRef.current.update({ time:candle.time, value:candle.volume, color:candle.close>=candle.open?'rgba(0,255,157,0.5)':'rgba(255,59,59,0.5)' });
-      });
+    // Lazy loading при скролле влево
+    chart.timeScale().subscribeVisibleLogicalRangeChange(async (range) => {
+      if (cancelled || !range || isLoadingMoreRef.current || !hasMoreRef.current) return;
+      if (range.from > 100) return;
+      const first = allCandlesRef.current[0];
+      if (!first) return;
+      isLoadingMoreRef.current = true;
+      if (!cancelled) setLoadingMore(true);
+      try {
+        const url = `${SERVER}/klines?exchange=${exchange}&symbol=${symbol}&interval=${localTfRef.current}&before=${first.openTime - 1}`;
+        const older = await requestQueue(url);
+        if (cancelled) { isLoadingMoreRef.current = false; return; }
+        if (!Array.isArray(older) || older.length === 0) {
+          hasMoreRef.current = false;
+        } else {
+          const merged = mergeCandles(older, allCandlesRef.current);
+          allCandlesRef.current = merged;
+          if (candleSeriesRef.current && !cancelled) {
+            candleSeriesRef.current.setData(merged);
+            volumeSeriesRef.current.setData(merged.map(d => ({ time:d.time, value:d.volume, color:d.close>=d.open?'rgba(0,255,157,0.5)':'rgba(255,59,59,0.5)' })));
+          }
+          if (older.length < 100) hasMoreRef.current = false;
+        }
+      } catch {}
+      isLoadingMoreRef.current = false;
+      if (!cancelled) setLoadingMore(false);
     });
 
-    return () => { cancelled=true; if(wsHandle) wsHandle.close(); candleSeriesRef.current=null; volumeSeriesRef.current=null; chartRef.current=null; try{chart.remove();}catch{} };
-  }, [localTf, symbol, exchange, isFullscreenMode, CHEIGHT]); // eslint-disable-line
+    return () => {
+      cancelled = true;
+      candleSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      chartRef.current        = null;
+      allCandlesRef.current   = [];
+      try { chart.remove(); } catch {}
+    };
+  }, [symbol, exchange, isFullscreenMode, CHEIGHT, useAutoSize]); // eslint-disable-line
 
-  // Пересчёт stats при изменении периодов фильтров (без перезагрузки графика)
+  // ── Загружаем данные при смене TF (без пересоздания графика) ───────────────
+  useEffect(() => {
+    if (!chartContainerRef.current) return;
+
+    let cancelled = false;
+    let wsHandle  = null;
+
+    const doLoad = () => {
+      if (!candleSeriesRef.current || !volumeSeriesRef.current || !chartRef.current) return;
+      allCandlesRef.current    = [];
+      hasMoreRef.current       = true;
+      isLoadingMoreRef.current = false;
+      setLoading(true);
+      setLoadingMore(false);
+
+      fetchKlines(exchange, symbol, localTf).then(rawData => {
+        if (cancelled || !candleSeriesRef.current) return;
+        if (rawData.length > 0) {
+          allCandlesRef.current = rawData;
+          candleSeriesRef.current.setData(rawData);
+          const lastPrice = rawData[rawData.length-1].close;
+          candleSeriesRef.current.applyOptions({ priceFormat:{type:'price',...getPriceFormat(lastPrice)} });
+          volumeSeriesRef.current.setData(rawData.map(d => ({ time:d.time, value:d.volume, color:d.close>=d.open?'rgba(0,255,157,0.5)':'rgba(255,59,59,0.5)' })));
+          chartRef.current.timeScale().scrollToRealTime();
+          const tfMin = TF_MIN[localTf]||5;
+          const s = computeStats(rawData, btcMapRef.current, filters, tfMin, symbol);
+          if (!cancelled && s) setStats(s);
+        }
+        if (!cancelled) setLoading(false);
+        if (!cancelled) wsHandle = createExchangeWS(exchange, symbol, localTf, (candle) => {
+          if (cancelled||!candleSeriesRef.current||!volumeSeriesRef.current) return;
+          const arr = allCandlesRef.current;
+          if (arr.length > 0 && arr[arr.length-1].time === candle.time) arr[arr.length-1] = candle;
+          else if (!arr.length || candle.time > arr[arr.length-1].time) arr.push(candle);
+          candleSeriesRef.current.update(candle);
+          volumeSeriesRef.current.update({ time:candle.time, value:candle.volume, color:candle.close>=candle.open?'rgba(0,255,157,0.5)':'rgba(255,59,59,0.5)' });
+        });
+      });
+    };
+
+    // setTimeout(0) — даём первому useEffect завершиться если компонент только смонтировался
+    const timer = setTimeout(doLoad, 0);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      if (wsHandle) wsHandle.close();
+    };
+  }, [localTf, symbol, exchange]); // eslint-disable-line
+
+  // Пересчёт stats при изменении периодов фильтров
   useEffect(() => {
     const cached = klinesCache.get(`${exchange}:${symbol}:${localTf}`);
     if (!cached || !cached.length) return;
@@ -288,12 +361,10 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
         </div>
         <div className="chart-header-btns">
           {onToggleWatch && (
-            <button
-              className="chart-star-btn"
+            <button className="chart-star-btn"
               style={{color: watchlist?.[symbol] ? starHex(watchlist[symbol]) : '#333'}}
               onClick={(e)=>{e.stopPropagation(); onToggleWatch(symbol);}}
-              title={watchlist?.[symbol] ? `Помечено (${STAR_COLORS.find(c=>c.key===watchlist[symbol])?.label})` : 'Пометить'}
-            >★</button>
+              title={watchlist?.[symbol] ? `Помечено (${STAR_COLORS.find(c=>c.key===watchlist[symbol])?.label})` : 'Пометить'}>★</button>
           )}
           {isFullscreenMode
             ? <button className="fullscreen-btn" onClick={onClose} title="Закрыть">✕</button>
@@ -312,6 +383,11 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
       </div>
       <div className="chart-relative-container" style={ useAutoSize ? {flex:1,minHeight:0} : { height: isFullscreenMode ? `calc(100vh - ${CHART_HEADER_H}px)` : `${CHEIGHT}px` } }>
         {loading && <div className="chart-loader"><div className="scanner-line"></div><div className="loader-info"><div className="loader-ticker">{symbol.replace(/[-_]?USDT.*/i,'')}</div><div className="loader-status">DECODING DATA...</div></div></div>}
+        {loadingMore && !loading && (
+          <div style={{position:'absolute',top:8,left:'50%',transform:'translateX(-50%)',zIndex:20,background:'rgba(0,0,0,0.7)',color:'#00ff9d',fontSize:11,padding:'3px 10px',borderRadius:4,pointerEvents:'none'}}>
+            ← загрузка истории...
+          </div>
+        )}
         <div className={`chart-anchor ${loading?'blurred':''}`} ref={chartContainerRef} />
         <div className="info-overlay">
           <div>ОБЪЕМ <span className="stat-period">(24ч)</span>: <b>{(parseFloat(marketStats.quoteVolume)/1e6).toFixed(1)}M$</b></div>
@@ -332,7 +408,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
 // ─── Виртуальная карточка ─────────────────────────────────────────────────────
 const VirtualChartCard = (props) => {
   const containerRef = useRef();
-  const [visible, setVisible] = useState(false);
+  const [visible, setVisible]       = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
 
   useEffect(() => {
@@ -361,14 +437,13 @@ const VirtualChartCard = (props) => {
   </>);
 };
 
-// ─── Список монет + боковой график ───────────────────────────────────────────
+// ─── Список монет ─────────────────────────────────────────────────────────────
 const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor, filters, btcMap, globalTf, defaultSort }) => {
-  const [sortCol, setSortCol] = useState(defaultSort || 'volume');
-  const [sortDir, setSortDir] = useState(-1);
-  const [statsMap, setStatsMap] = useState({});
+  const [sortCol, setSortCol]         = useState(defaultSort || 'volume');
+  const [sortDir, setSortDir]         = useState(-1);
+  const [statsMap, setStatsMap]       = useState({});
   const [selectedSymbol, setSelectedSymbol] = useState(null);
 
-  // Сброс сортировки при переключении режима "все / по фильтрам"
   useEffect(() => { setSortCol(defaultSort || 'volume'); setSortDir(-1); }, [defaultSort]);
 
   const handleSort = (col) => { if(sortCol===col) setSortDir(d=>-d); else {setSortCol(col);setSortDir(-1);} };
@@ -377,10 +452,9 @@ const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor
     if (!coins.length) return;
     let cancelled = false;
     const tfMin = TF_MIN[globalTf]||5;
-    const top = coins;
     const map = {};
     (async () => {
-      await Promise.all(top.map(async (coin) => {
+      await Promise.all(coins.map(async (coin) => {
         try {
           const rawData = await fetchKlines(exchange, coin.symbol, globalTf);
           if (cancelled||!rawData.length) return;
@@ -393,11 +467,9 @@ const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor
     return () => { cancelled=true; };
   }, [exchange, globalTf, coins.length, btcMap, filters.natrPeriod, filters.volatPeriod, filters.corrPeriod]); // eslint-disable-line
 
-  // Помеченные — наверх, потом сортировка по столбцу
   const sorted = useMemo(() => [...coins].sort((a, b) => {
     const aS=!!watchlist[a.symbol], bS=!!watchlist[b.symbol];
-    if (aS&&!bS) return -1;
-    if (!aS&&bS) return 1;
+    if (aS&&!bS) return -1; if (!aS&&bS) return 1;
     let va, vb;
     switch (sortCol) {
       case 'symbol': va=a.symbol; vb=b.symbol; return sortDir*va.localeCompare(vb);
@@ -426,28 +498,15 @@ const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor
 
   return (
     <div className="list-split-view">
-      {/* Левая панель — график выбранной монеты */}
       <div className="list-chart-panel">
         {chartCoin && (
-          <ChartComponent
-            symbol={chartCoin.symbol}
-            marketStats={chartCoin}
-            globalTf={globalTf}
-            filters={filters}
-            btcMap={btcMap}
-            exchange={exchange}
-            isFullscreenMode={false}
-            onFullscreen={null}
-            precomputedStats={statsMap[chartCoin.symbol]||null}
-            autoSize={true}
-            watchlist={watchlist}
-            onToggleWatch={onToggleWatch}
-            selectedStarColor={selectedStarColor}
-          />
+          <ChartComponent symbol={chartCoin.symbol} marketStats={chartCoin}
+            globalTf={globalTf} filters={filters} btcMap={btcMap} exchange={exchange}
+            isFullscreenMode={false} onFullscreen={null}
+            precomputedStats={statsMap[chartCoin.symbol]||null} autoSize={true}
+            watchlist={watchlist} onToggleWatch={onToggleWatch} selectedStarColor={selectedStarColor}/>
         )}
       </div>
-
-      {/* Правая панель — таблица */}
       <div className="list-table-panel">
         <div className="coin-list-scroll">
           <table className="coin-list-table">
@@ -464,28 +523,20 @@ const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor
             </tr></thead>
             <tbody>
               {sorted.map(coin => {
-                const chg      = parseFloat(coin.priceChangePercent);
-                const s        = statsMap[coin.symbol];
-                const starKey  = watchlist[coin.symbol];
-                const isSelected = coin.symbol === chartCoin?.symbol;
+                const chg=parseFloat(coin.priceChangePercent);
+                const s=statsMap[coin.symbol];
+                const starKey=watchlist[coin.symbol];
+                const isSelected=coin.symbol===chartCoin?.symbol;
                 return (
-                  <tr
-                    key={coin.symbol}
+                  <tr key={coin.symbol}
                     className={`list-row ${starKey?'starred':''} ${isSelected?'list-row-selected':''}`}
-                    onClick={() => setSelectedSymbol(coin.symbol)}
-                    style={{cursor:'pointer'}}
-                  >
+                    onClick={()=>setSelectedSymbol(coin.symbol)} style={{cursor:'pointer'}}>
                     <td onClick={e=>e.stopPropagation()}>
-                      <button
-                        className="star-btn"
-                        style={{ color: starKey ? starHex(starKey) : '#333' }}
-                        onClick={() => onToggleWatch(coin.symbol)}
-                        title={starKey ? `Помечено (${STAR_COLORS.find(c=>c.key===starKey)?.label}) — нажми чтобы изменить или снять` : 'Пометить'}
-                      >★</button>
+                      <button className="star-btn" style={{color:starKey?starHex(starKey):'#333'}}
+                        onClick={()=>onToggleWatch(coin.symbol)}
+                        title={starKey?`Помечено (${STAR_COLORS.find(c=>c.key===starKey)?.label})`:'Пометить'}>★</button>
                     </td>
-                    <td className="list-symbol">
-                      {coin.symbol.replace(/[-_]?(USDT|BUSD|USDC).*$/i, '') + 'USDT.P'}
-                    </td>
+                    <td className="list-symbol">{coin.symbol.replace(/[-_]?(USDT|BUSD|USDC).*$/i,'')+'USDT.P'}</td>
                     <td>{parseFloat(coin.price).toPrecision(5)}</td>
                     <td className={chg>=0?'green':'red'}>{chg>0?'+':''}{chg.toFixed(2)}%</td>
                     <td>{(parseFloat(coin.quoteVolume)/1e6).toFixed(1)}M$</td>
@@ -507,7 +558,7 @@ const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor
 // ─── Дефолтные фильтры ────────────────────────────────────────────────────────
 const defaultFilters = {
   minVolume:10, maxVolume:99999,    volPeriod:24,
-  minChange:0,  maxChange:100,      chgPeriod:24,
+  minChange:0,  maxChange:99999,      chgPeriod:24,
   minTrades:0,  maxTrades:99999999, trdPeriod:24,
   minNatr:0,    maxNatr:100,        natrPeriod:2,
   minVolat:0,   maxVolat:100,       volatPeriod:6,
@@ -528,9 +579,8 @@ function App() {
   const [listShowAll, setListShowAll]       = useState(false);
   const [statsMap, setStatsMap]             = useState({});
   const [statsLoading, setStatsLoading]     = useState(false);
-  const [serverError, setServerError] = useState(false);
+  const [serverError, setServerError]       = useState(false);
 
-  // watchlist: { [symbol]: colorKey }
   const [watchlist, setWatchlist] = useState(() => {
     try {
       const v2 = localStorage.getItem('kopibar_watchlist_v2');
@@ -559,7 +609,7 @@ function App() {
         const parsed = JSON.parse(saved);
         return parsed.map(t => {
           const f = {...defaultFilters,...t.filters};
-          if (t.id===1) {f.minNatr=0;f.maxNatr=100;f.minVolat=0;f.maxVolat=100;f.minCorr=-100;f.maxCorr=100;}
+          if (t.id===1){f.minNatr=0;f.maxNatr=100;f.minVolat=0;f.maxVolat=100;f.minCorr=-100;f.maxCorr=100;}
           return {...t, filters:f, appliedFilters: t.appliedFilters?{...defaultFilters,...t.appliedFilters}:f};
         });
       }
@@ -567,16 +617,15 @@ function App() {
     return [defaultTab];
   });
 
-  const [activeTabId, setActiveTabId] = useState(() => { try{return Number(localStorage.getItem('kopibar_active_tab'))||1;}catch{return 1;} });
-  const [editingTabId, setEditingTabId] = useState(null);
+  const [activeTabId, setActiveTabId]       = useState(() => { try{return Number(localStorage.getItem('kopibar_active_tab'))||1;}catch{return 1;} });
+  const [editingTabId, setEditingTabId]     = useState(null);
   const [editingTabName, setEditingTabName] = useState('');
-  const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmClear, setConfirmClear]     = useState(false);
 
   useEffect(() => { try{localStorage.setItem('kopibar_tabs',JSON.stringify(tabs));}catch{} }, [tabs]);
   useEffect(() => { try{localStorage.setItem('kopibar_active_tab',String(activeTabId));}catch{} }, [activeTabId]);
   useEffect(() => { try{localStorage.setItem('kopibar_watchlist_v2',JSON.stringify(watchlist));}catch{} }, [watchlist]);
 
-  // Закрыть watch dropdown при клике снаружи
   useEffect(() => {
     const h=(e)=>{ if(watchDropRef.current&&!watchDropRef.current.contains(e.target)) setWatchDropOpen(false); if(starColorRef.current&&!starColorRef.current.contains(e.target)) setStarColorOpen(false); };
     document.addEventListener('mousedown',h); return ()=>document.removeEventListener('mousedown',h);
@@ -589,25 +638,21 @@ function App() {
   const activeTab     = tabs.find(t=>t.id===activeTabId)||tabs[0];
   const activeFilters = useMemo(()=>activeTab.appliedFilters||activeTab.filters,[activeTab]);
   const hasPendingChanges = JSON.stringify(activeTab.filters)!==JSON.stringify(activeTab.appliedFilters||activeTab.filters);
-
   const watchlistSize = Object.keys(watchlist).length;
 
   const toggleWatch = useCallback((symbol) => {
     setWatchlist(prev => {
       const next = {...prev};
-      if (next[symbol]===selectedStarColor) delete next[symbol]; // тот же цвет → снять
-      else next[symbol] = selectedStarColor;                      // новый / другой цвет
+      if (next[symbol]===selectedStarColor) delete next[symbol];
+      else next[symbol] = selectedStarColor;
       return next;
     });
   }, [selectedStarColor]);
 
-  const clearWatchlist = useCallback(() => {
-    setConfirmClear(true);
-  }, []);
+  const clearWatchlist = useCallback(() => { setConfirmClear(true); }, []);
 
   const fetchMarket = useCallback(() => {
-    setLoadingMarket(true);
-    setServerError(false);
+    setLoadingMarket(true); setServerError(false);
     Promise.all([
       requestQueue(`${SERVER}/symbols?exchange=${activeExchange}`),
       requestQueue(`${SERVER}/tickers?exchange=${activeExchange}&interval=${activeTab.globalTf}`)
@@ -615,9 +660,7 @@ function App() {
       if(Array.isArray(symbols)) setActiveSymbols(symbols);
       if(Array.isArray(tickers)) setMarketData(tickers);
       if(!Array.isArray(symbols)||!Array.isArray(tickers)) setServerError(true);
-    }).catch(()=>{
-      setServerError(true);
-    }).finally(()=>setLoadingMarket(false));
+    }).catch(()=>{ setServerError(true); }).finally(()=>setLoadingMarket(false));
   }, [activeExchange, activeTab.globalTf]);
 
   const fetchBtcMap = useCallback(async (tf) => {
@@ -635,15 +678,11 @@ function App() {
   const updateF = (key, val) => setTabs(tabs.map(t => {
     if (t.id !== activeTabId) return t;
     const newFilters = {...t.filters, [key]: Number(val)};
-    // периоды применяются сразу без кнопки "Применить"
-    const newApplied = PERIOD_KEYS.has(key)
-      ? {...(t.appliedFilters||t.filters), [key]: Number(val)}
-      : t.appliedFilters;
+    const newApplied = PERIOD_KEYS.has(key) ? {...(t.appliedFilters||t.filters), [key]: Number(val)} : t.appliedFilters;
     return {...t, filters: newFilters, ...(newApplied ? {appliedFilters: newApplied} : {})};
   }));
   const applyFilters = ()=>setTabs(tabs.map(t=>t.id===activeTabId?{...t,appliedFilters:{...t.filters}}:t));
 
-  // Шаг 1
   const preFilteredCoins = useMemo(() => {
     const f=activeFilters;
     return marketData.filter(item=>{
@@ -661,17 +700,14 @@ function App() {
     });
   }, [marketData, activeSymbols, activeFilters, sortBy]);
 
-  // Все монеты без фильтров, отсортированные по |изм%| убыванию (для "Все монеты" в списке)
-  const allCoins = useMemo(() => {
-    return marketData
-      .filter(item => activeSymbols.includes(item.symbol))
-      .sort((a,b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent));
-  }, [marketData, activeSymbols]);
+  const allCoins = useMemo(() => marketData
+    .filter(item => activeSymbols.includes(item.symbol))
+    .sort((a,b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent)),
+  [marketData, activeSymbols]);
 
-  // Шаг 2
   const needStats = activeTab.id!==1 && hasStatsFilter(activeFilters);
   const depsKey = useMemo(
-    () => preFilteredCoins.map(c => c.symbol).join(',') + `|${activeExchange}|${activeTab.globalTf}|${activeFilters.natrPeriod}|${activeFilters.volatPeriod}|${activeFilters.corrPeriod}`,
+    () => preFilteredCoins.map(c=>c.symbol).join(',') + `|${activeExchange}|${activeTab.globalTf}|${activeFilters.natrPeriod}|${activeFilters.volatPeriod}|${activeFilters.corrPeriod}`,
     [preFilteredCoins, activeExchange, activeTab.globalTf, activeFilters.natrPeriod, activeFilters.volatPeriod, activeFilters.corrPeriod]
   );
 
@@ -696,7 +732,6 @@ function App() {
     return()=>{abort.cancelled=true;};
   }, [depsKey, btcMap, needStats]); // eslint-disable-line
 
-  // Шаг 3
   const filteredCoins = useMemo(() => {
     if (!needStats) return preFilteredCoins;
     return preFilteredCoins.filter(c=>{
@@ -706,104 +741,71 @@ function App() {
     });
   }, [preFilteredCoins, statsMap, activeFilters, needStats]);
 
-  // Избранное с фильтром по цвету
   const watchlistCoins = useMemo(() => filteredCoins.filter(c=>{
     if(!watchlist[c.symbol]) return false;
     if(watchColorFilter&&watchlist[c.symbol]!==watchColorFilter) return false;
     return true;
   }), [filteredCoins, watchlist, watchColorFilter]);
 
-  const displayCoins    = viewMode==='watchlist' ? watchlistCoins : filteredCoins;
-  const analyzingCount  = needStats&&statsLoading ? preFilteredCoins.filter(c=>statsMap[c.symbol]===undefined).length : 0;
+  const displayCoins   = viewMode==='watchlist' ? watchlistCoins : filteredCoins;
+  const analyzingCount = needStats&&statsLoading ? preFilteredCoins.filter(c=>statsMap[c.symbol]===undefined).length : 0;
 
   return (
     <div className="app-container">
       <header className="main-header">
         <div className="header-top">
           <div className="logo">Kopi<span className="green-accent">Bar</span></div>
-
           <div className="exchange-tabs">
             {EXCHANGES.map(ex=><button key={ex.id} className={`exchange-tab ${activeExchange===ex.id?'active':''}`} onClick={()=>setActiveExchange(ex.id)}>{ex.label}</button>)}
           </div>
-
           <div className="tabs-container">
             {tabs.map(t=>(
               <div key={t.id} className={`tab-item ${activeTabId===t.id?'active':''}`} onClick={()=>{if(editingTabId!==t.id)setActiveTabId(t.id);}}>
                 {editingTabId===t.id ? (
-                  <input
-                    className="tab-name-input"
-                    value={editingTabName}
-                    autoFocus
+                  <input className="tab-name-input" value={editingTabName} autoFocus
                     onChange={e=>setEditingTabName(e.target.value)}
                     onKeyDown={e=>{
-                      if(e.key==='Enter'){
-                        if(editingTabName.trim()) setTabs(tabs.map(x=>x.id===t.id?{...x,name:editingTabName.trim()}:x));
-                        setEditingTabId(null);
-                      }
-                      if(e.key==='Escape') setEditingTabId(null);
+                      if(e.key==='Enter'){if(editingTabName.trim())setTabs(tabs.map(x=>x.id===t.id?{...x,name:editingTabName.trim()}:x));setEditingTabId(null);}
+                      if(e.key==='Escape')setEditingTabId(null);
                     }}
-                    onBlur={()=>{
-                      if(editingTabName.trim()) setTabs(tabs.map(x=>x.id===t.id?{...x,name:editingTabName.trim()}:x));
-                      setEditingTabId(null);
-                    }}
-                    onClick={e=>e.stopPropagation()}
-                  />
-                ) : (
-                  <span className="tab-name">{t.name}</span>
-                )}
+                    onBlur={()=>{if(editingTabName.trim())setTabs(tabs.map(x=>x.id===t.id?{...x,name:editingTabName.trim()}:x));setEditingTabId(null);}}
+                    onClick={e=>e.stopPropagation()}/>
+                ) : <span className="tab-name">{t.name}</span>}
                 {t.id!==1&&editingTabId!==t.id&&<span className="edit-icon" onClick={(e)=>{e.stopPropagation();setEditingTabId(t.id);setEditingTabName(t.name);}}>✎</span>}
                 {t.id!==1&&<span className="close-x" onClick={(e)=>{e.stopPropagation();setTabs(tabs.filter(x=>x.id!==t.id));setActiveTabId(1);}}>×</span>}
               </div>
             ))}
             <button className="add-btn" onClick={()=>setTabs([...tabs,{...activeTab,id:Date.now(),name:'Новая',filters:{...activeTab.filters,minNatr:0,maxNatr:100,minVolat:0,maxVolat:100,minCorr:-100,maxCorr:100},appliedFilters:{...activeTab.filters,minNatr:0,maxNatr:100,minVolat:0,maxVolat:100,minCorr:-100,maxCorr:100}}])}>+</button>
           </div>
-
           <div className="header-right">
             <div className="view-toggle">
               <button className={`view-btn ${viewMode==='charts'?'active':''}`} onClick={()=>setViewMode('charts')}><span className="view-btn-icon">⊞</span><span className="view-btn-label">Графики</span></button>
               <button className={`view-btn ${viewMode==='list'?'active':''}`} onClick={()=>setViewMode('list')}><span className="view-btn-icon">☰</span><span className="view-btn-label">Список</span></button>
               {viewMode==='list' && (
-                <button className={`view-btn list-show-all-btn ${listShowAll?'active':''}`} onClick={()=>setListShowAll(v=>!v)} title="Показать все монеты / только по фильтрам">
+                <button className={`view-btn list-show-all-btn ${listShowAll?'active':''}`} onClick={()=>setListShowAll(v=>!v)}>
                   {listShowAll ? 'Все монеты' : 'По фильтрам'}
                 </button>
               )}
-
-              {/* Кнопка Избранное + выпадашка цветов */}
               <div className="watchlist-btn-wrap" ref={watchDropRef}>
                 <button className={`view-btn ${viewMode==='watchlist'?'active':''}`} onClick={()=>setViewMode('watchlist')}>
                   <span className="view-btn-icon" style={{color:watchColorFilter?starHex(watchColorFilter):'#f0c040'}}>★</span>
                   <span className="view-btn-label">Избранное{watchlistSize>0?` (${watchlistSize})`:''}</span>
                 </button>
-                <button className="watch-drop-arrow-btn" onClick={(e)=>{
-                  const r=e.currentTarget.getBoundingClientRect();
-                  setWatchDropPos({top:r.bottom+4, left:r.left + r.width/2});
-                  setWatchDropOpen(o=>!o);
-                }} title="Фильтр по цвету">▾</button>
+                <button className="watch-drop-arrow-btn" onClick={(e)=>{const r=e.currentTarget.getBoundingClientRect();setWatchDropPos({top:r.bottom+4,left:r.left+r.width/2});setWatchDropOpen(o=>!o);}}>▾</button>
               </div>
             </div>
-
-            {/* Выбор цвета для пометки */}
             <div className="star-color-select-wrap" ref={starColorRef}>
-              <button className="star-color-btn" onClick={()=>{
-                const r=starColorRef.current?.getBoundingClientRect();
-                if(r) setStarColorPos({top:r.bottom+4, left:r.left});
-                setStarColorOpen(o=>!o);
-              }} title="Цвет пометки">
+              <button className="star-color-btn" onClick={()=>{const r=starColorRef.current?.getBoundingClientRect();if(r)setStarColorPos({top:r.bottom+4,left:r.left});setStarColorOpen(o=>!o);}}>
                 <span style={{color:starHex(selectedStarColor),fontSize:16}}>★</span>
                 <span className="star-color-arrow">▾</span>
               </button>
             </div>
-
             <div className="results-count">
-              {serverError
-                ? <span style={{color:'#ff3b3b'}}>⚠ Сервер недоступен</span>
-                : loadingMarket
-                  ? <span className="green-accent">Загрузка...</span>
-                  : analyzingCount>0
-                    ? <><span className="green-accent">Анализ...</span> <span style={{color:'#666',fontSize:'11px'}}>({preFilteredCoins.length-analyzingCount}/{preFilteredCoins.length})</span></>
-                    : <>Найдено: <span className="green-accent">{filteredCoins.length}</span>{watchlistSize>0&&<span style={{color:'#f0c040'}}> ★{watchlistSize}</span>}</>}
+              {serverError ? <span style={{color:'#ff3b3b'}}>⚠ Сервер недоступен</span>
+                : loadingMarket ? <span className="green-accent">Загрузка...</span>
+                : analyzingCount>0 ? <><span className="green-accent">Анализ...</span> <span style={{color:'#666',fontSize:'11px'}}>({preFilteredCoins.length-analyzingCount}/{preFilteredCoins.length})</span></>
+                : <>Найдено: <span className="green-accent">{filteredCoins.length}</span>{watchlistSize>0&&<span style={{color:'#f0c040'}}> ★{watchlistSize}</span>}</>}
             </div>
-
             <div className="sort-box">
               <span className="sort-label">Сортировка:</span>
               <select className="global-tf-select" value={sortBy} onChange={e=>setSortBy(e.target.value)}>
@@ -812,14 +814,21 @@ function App() {
                 <option value="trades">Сделки</option>
               </select>
             </div>
-            <select className="global-tf-select" value={activeTab.globalTf} onChange={e=>setTabs(tabs.map(t=>t.id===activeTabId?{...t,globalTf:e.target.value}:t))}>
+            <select className="global-tf-select" value={activeTab.globalTf} onChange={e=>{
+              const newTf = e.target.value;
+              setTabs(tabs.map(t=>t.id===activeTabId?{...t,globalTf:newTf}:t));
+              // Prefetch данных ДО перерисовки карточек
+              displayCoins.slice(0,30).forEach(c=>{
+                const key=`${activeExchange}:${c.symbol}:${newTf}`;
+                if(!klinesCache.has(key)) fetchKlines(activeExchange,c.symbol,newTf).catch(()=>{});
+              });
+            }}>
               {timeframes.map(tf=><option key={tf} value={tf}>{tf}</option>)}
             </select>
             <button className="refresh-btn" onClick={fetchMarket}>Обновить</button>
           </div>
         </div>
 
-        {/* Фильтры */}
         <div className="sub-header-line">
           {activeTab.id===1 ? (
             <div className="filters-area-static"><div className="f-row">
@@ -867,120 +876,71 @@ function App() {
       </header>
 
       {serverError && (
-        <div style={{
-          background:'#1a0a0a', border:'1px solid #ff3b3b', borderRadius:6,
-          margin:'20px', padding:'16px 20px', color:'#ff6666', fontSize:13,
-          display:'flex', alignItems:'center', justifyContent:'space-between'
-        }}>
+        <div style={{background:'#1a0a0a',border:'1px solid #ff3b3b',borderRadius:6,margin:'20px',padding:'16px 20px',color:'#ff6666',fontSize:13,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
           <span>⚠ Сервер недоступен — проверь что сервер запущен (<b>pm2 status</b>)</span>
-          <button onClick={fetchMarket} style={{
-            background:'#ff3b3b', border:'none', color:'#fff',
-            padding:'6px 14px', borderRadius:4, cursor:'pointer', fontSize:12
-          }}>Повторить</button>
+          <button onClick={fetchMarket} style={{background:'#ff3b3b',border:'none',color:'#fff',padding:'6px 14px',borderRadius:4,cursor:'pointer',fontSize:12}}>Повторить</button>
         </div>
       )}
 
       {viewMode==='list' && (
-        <CoinList
-          coins={listShowAll ? allCoins : filteredCoins}
-          defaultSort={listShowAll ? 'change' : 'volume'}
-          exchange={activeExchange}
-          watchlist={watchlist}
-          onToggleWatch={toggleWatch}
-          selectedStarColor={selectedStarColor}
-          filters={activeFilters}
-          btcMap={btcMap}
-          globalTf={activeTab.globalTf}
-        />
+        <CoinList coins={listShowAll?allCoins:filteredCoins} defaultSort={listShowAll?'change':'volume'}
+          exchange={activeExchange} watchlist={watchlist} onToggleWatch={toggleWatch}
+          selectedStarColor={selectedStarColor} filters={activeFilters} btcMap={btcMap} globalTf={activeTab.globalTf}/>
       )}
 
       {viewMode==='watchlist' && watchlistCoins.length===0 && (
         <div className="empty-watchlist">
           <div style={{color:'#f0c040',fontSize:48}}>★</div>
           <div>Нет избранных монет</div>
-          <div>{watchColorFilter ? `Нет монет с цветом «${STAR_COLORS.find(c=>c.key===watchColorFilter)?.label}»` : 'В режиме списка нажми ★ рядом с монетой'}</div>
+          <div>{watchColorFilter?`Нет монет с цветом «${STAR_COLORS.find(c=>c.key===watchColorFilter)?.label}»`:'В режиме списка нажми ★ рядом с монетой'}</div>
         </div>
       )}
 
       {(viewMode==='charts'||viewMode==='watchlist') && (
         <div className="grid-scroll">
           <div className="grid-box">
-          {displayCoins.map(c=>(
-            <VirtualChartCard
-              key={`${activeExchange}-${c.symbol}`}
-              symbol={c.symbol}
-              marketStats={c}
-              globalTf={activeTab.globalTf}
-              filters={activeFilters}
-              btcMap={btcMap}
-              exchange={activeExchange}
-              precomputedStats={statsMap[c.symbol]||null}
-              watchlist={watchlist}
-              onToggleWatch={toggleWatch}
-              selectedStarColor={selectedStarColor}
-            />
-          ))}
-        </div>
+            {displayCoins.map(c=>(
+              <VirtualChartCard key={`${activeExchange}-${c.symbol}`} symbol={c.symbol} marketStats={c}
+                globalTf={activeTab.globalTf} filters={activeFilters} btcMap={btcMap}
+                exchange={activeExchange} precomputedStats={statsMap[c.symbol]||null}
+                watchlist={watchlist} onToggleWatch={toggleWatch} selectedStarColor={selectedStarColor}/>
+            ))}
+          </div>
         </div>
       )}
 
-      {/* Порталы — рендерятся поверх всего в document.body */}
       {watchDropOpen && ReactDOM.createPortal(
-        <div className="watch-color-dropdown portal-dropdown" style={{top:watchDropPos.top, left:watchDropPos.left, transform:'translateX(-50%)'}}
-          onMouseDown={e=>e.stopPropagation()}>
-          <button className={`watch-color-opt ${!watchColorFilter?'active':''}`} onClick={()=>{setWatchColorFilter(null);setWatchDropOpen(false);}}>
-            Все
-          </button>
+        <div className="watch-color-dropdown portal-dropdown" style={{top:watchDropPos.top,left:watchDropPos.left,transform:'translateX(-50%)'}} onMouseDown={e=>e.stopPropagation()}>
+          <button className={`watch-color-opt ${!watchColorFilter?'active':''}`} onClick={()=>{setWatchColorFilter(null);setWatchDropOpen(false);}}>Все</button>
           {STAR_COLORS.map(sc=>(
-            <button key={sc.key} className={`watch-color-opt ${watchColorFilter===sc.key?'active':''}`}
-              onClick={()=>{setWatchColorFilter(sc.key);setWatchDropOpen(false);}}>
+            <button key={sc.key} className={`watch-color-opt ${watchColorFilter===sc.key?'active':''}`} onClick={()=>{setWatchColorFilter(sc.key);setWatchDropOpen(false);}}>
               <span style={{color:sc.hex,fontSize:15}}>★</span>
             </button>
           ))}
           <div className="watch-drop-divider"/>
           <button className="watch-color-opt watch-clear-opt" onClick={()=>{clearWatchlist();setWatchDropOpen(false);}}>✕</button>
-        </div>,
-        document.body
+        </div>, document.body
       )}
 
       {starColorOpen && ReactDOM.createPortal(
-        <div className="star-color-dropdown portal-dropdown" style={{top:starColorPos.top, left:starColorPos.left}}
-          onMouseDown={e=>e.stopPropagation()}>
+        <div className="star-color-dropdown portal-dropdown" style={{top:starColorPos.top,left:starColorPos.left}} onMouseDown={e=>e.stopPropagation()}>
           {STAR_COLORS.map(sc=>(
-            <button key={sc.key}
-              className={`star-color-opt2 ${selectedStarColor===sc.key?'active':''}`}
-              onClick={()=>{setSelectedStarColor(sc.key);setStarColorOpen(false);}}
-              title={sc.label}
-            ><span style={{color:sc.hex,fontSize:18}}>★</span></button>
+            <button key={sc.key} className={`star-color-opt2 ${selectedStarColor===sc.key?'active':''}`}
+              onClick={()=>{setSelectedStarColor(sc.key);setStarColorOpen(false);}} title={sc.label}>
+              <span style={{color:sc.hex,fontSize:18}}>★</span>
+            </button>
           ))}
-        </div>,
-        document.body
+        </div>, document.body
       )}
+
       {confirmClear && (
-        <div style={{
-          position:'fixed', inset:0, zIndex:999999,
-          display:'flex', alignItems:'center', justifyContent:'center',
-          background:'rgba(0,0,0,0.7)'
-        }} onClick={()=>setConfirmClear(false)}>
-          <div style={{
-            background:'#111113', border:'1px solid #333', borderRadius:8,
-            padding:'24px 28px', minWidth:300, boxShadow:'0 20px 60px rgba(0,0,0,0.9)'
-          }} onClick={e=>e.stopPropagation()}>
-            <div style={{color:'#fff', fontSize:15, fontWeight:600, marginBottom:8}}>
-              Очистить избранное?
-            </div>
-            <div style={{color:'#666', fontSize:13, marginBottom:20}}>
-              Все {Object.keys(watchlist).length} помеченных монет будут удалены
-            </div>
-            <div style={{display:'flex', gap:10, justifyContent:'flex-end'}}>
-              <button onClick={()=>setConfirmClear(false)} style={{
-                background:'transparent', border:'1px solid #333', color:'#aaa',
-                padding:'7px 18px', borderRadius:5, cursor:'pointer', fontSize:13
-              }}>Отмена</button>
-              <button onClick={()=>{setWatchlist({});setConfirmClear(false);setWatchDropOpen(false);}} style={{
-                background:'#ff3b3b', border:'none', color:'#fff',
-                padding:'7px 18px', borderRadius:5, cursor:'pointer', fontSize:13, fontWeight:600
-              }}>Очистить</button>
+        <div style={{position:'fixed',inset:0,zIndex:999999,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.7)'}} onClick={()=>setConfirmClear(false)}>
+          <div style={{background:'#111113',border:'1px solid #333',borderRadius:8,padding:'24px 28px',minWidth:300,boxShadow:'0 20px 60px rgba(0,0,0,0.9)'}} onClick={e=>e.stopPropagation()}>
+            <div style={{color:'#fff',fontSize:15,fontWeight:600,marginBottom:8}}>Очистить избранное?</div>
+            <div style={{color:'#666',fontSize:13,marginBottom:20}}>Все {Object.keys(watchlist).length} помеченных монет будут удалены</div>
+            <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}>
+              <button onClick={()=>setConfirmClear(false)} style={{background:'transparent',border:'1px solid #333',color:'#aaa',padding:'7px 18px',borderRadius:5,cursor:'pointer',fontSize:13}}>Отмена</button>
+              <button onClick={()=>{setWatchlist({});setConfirmClear(false);setWatchDropOpen(false);}} style={{background:'#ff3b3b',border:'none',color:'#fff',padding:'7px 18px',borderRadius:5,cursor:'pointer',fontSize:13,fontWeight:600}}>Очистить</button>
             </div>
           </div>
         </div>
