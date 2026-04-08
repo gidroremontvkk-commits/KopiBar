@@ -3,15 +3,8 @@ import ReactDOM from 'react-dom';
 import * as LightweightCharts from 'lightweight-charts';
 import './App.css';
 
-const SERVER = 'http://77.239.105.144:3001';
-
-const EXCHANGES = [
-  { id: 'binance', label: 'Binance' },
-  { id: 'bybit',   label: 'Bybit'   },
-  { id: 'okx',     label: 'OKX'     },
-  { id: 'gateio',  label: 'Gate.io' },
-  { id: 'bitget',  label: 'Bitget'  },
-];
+const SERVER = import.meta.env.VITE_KOPIBAR_SERVER || 'http://77.239.105.144:3001';
+const ACTIVE_EXCHANGE = 'binance';
 
 const timeframes = ['1m', '5m', '15m', '1h', '4h', '1d'];
 const TF_MIN = { '1m':1,'5m':5,'15m':15,'1h':60,'4h':240,'1d':1440 };
@@ -27,36 +20,11 @@ const STAR_COLORS = [
 ];
 const starHex = (key) => STAR_COLORS.find(c => c.key === key)?.hex || '#f0c040';
 
-function createExchangeWS(exchange, symbol, interval, onCandle) {
+function createExchangeWS(symbol, interval, onCandle) {
   let ws = null, pingInterval = null;
   try {
-    if (exchange === 'binance') {
-      ws = new WebSocket(`wss://fstream.binance.com/ws/${symbol.toLowerCase()}@kline_${interval}`);
-      ws.onmessage = (e) => { try { const msg=JSON.parse(e.data); if(msg.e==='kline'){const k=msg.k; onCandle({time:k.t/1000,open:+k.o,high:+k.h,low:+k.l,close:+k.c,volume:+k.v,openTime:k.t});} } catch {} };
-    } else if (exchange === 'bybit') {
-      const tfMap={'1m':'1','5m':'5','15m':'15','1h':'60','4h':'240','1d':'D'};
-      ws = new WebSocket('wss://stream.bybit.com/v5/public/linear');
-      ws.onopen = () => ws.send(JSON.stringify({op:'subscribe',args:[`kline.${tfMap[interval]||interval}.${symbol}`]}));
-      pingInterval = setInterval(() => { if(ws?.readyState===1) ws.send(JSON.stringify({op:'ping'})); }, 20000);
-      ws.onmessage = (e) => { try { const msg=JSON.parse(e.data); if(msg.topic?.startsWith('kline')&&msg.data?.[0]){const k=msg.data[0]; onCandle({time:+k.start/1000,open:+k.open,high:+k.high,low:+k.low,close:+k.close,volume:+k.volume,openTime:+k.start});} } catch {} };
-    } else if (exchange === 'okx') {
-      const tfMap={'1m':'1m','5m':'5m','15m':'15m','1h':'1H','4h':'4H','1d':'1D'};
-      ws = new WebSocket('wss://ws.okx.com:8443/ws/v5/public');
-      ws.onopen = () => ws.send(JSON.stringify({op:'subscribe',args:[{channel:`candle${tfMap[interval]||interval}`,instId:symbol}]}));
-      pingInterval = setInterval(() => { if(ws?.readyState===1) ws.send('ping'); }, 25000);
-      ws.onmessage = (e) => { try { if(e.data==='pong') return; const msg=JSON.parse(e.data); if(msg.data?.[0]){const k=msg.data[0]; onCandle({time:+k[0]/1000,open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],openTime:+k[0]});} } catch {} };
-    } else if (exchange === 'gateio') {
-      ws = new WebSocket('wss://fx-ws.gateio.ws/v4/ws/usdt');
-      ws.onopen = () => ws.send(JSON.stringify({time:Math.floor(Date.now()/1000),channel:'futures.candlesticks',event:'subscribe',payload:[interval,symbol]}));
-      pingInterval = setInterval(() => { if(ws?.readyState===1) ws.send(JSON.stringify({time:Math.floor(Date.now()/1000),channel:'futures.ping'})); }, 20000);
-      ws.onmessage = (e) => { try { const msg=JSON.parse(e.data); if(msg.channel==='futures.candlesticks'&&msg.result){const k=msg.result; onCandle({time:+k.t,open:+k.o,high:+k.h,low:+k.l,close:+k.c,volume:+k.v,openTime:+k.t*1000});} } catch {} };
-    } else if (exchange === 'bitget') {
-      const tfMap={'1m':'1m','5m':'5m','15m':'15m','1h':'1h','4h':'4h','1d':'1d'};
-      ws = new WebSocket('wss://ws.bitget.com/v2/ws/public');
-      ws.onopen = () => ws.send(JSON.stringify({op:'subscribe',args:[{instType:'USDT-FUTURES',channel:`candle${tfMap[interval]||interval}`,instId:symbol}]}));
-      pingInterval = setInterval(() => { if(ws?.readyState===1) ws.send('ping'); }, 25000);
-      ws.onmessage = (e) => { try { if(e.data==='pong') return; const msg=JSON.parse(e.data); if(msg.data?.[0]){const k=msg.data[0]; onCandle({time:+k[0]/1000,open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],openTime:+k[0]});} } catch {} };
-    }
+    ws = new WebSocket(`wss://fstream.binance.com/ws/${symbol.toLowerCase()}@kline_${interval}`);
+    ws.onmessage = (e) => { try { const msg=JSON.parse(e.data); if(msg.e==='kline'){const k=msg.k; onCandle({time:k.t/1000,open:+k.o,high:+k.h,low:+k.l,close:+k.c,volume:+k.v,openTime:k.t});} } catch {} };
     if (ws) { ws.onerror=()=>{}; ws.onclose=()=>{}; }
   } catch {}
   return { close: () => { if(pingInterval) clearInterval(pingInterval); if(ws){ws.onmessage=null;ws.onerror=null;ws.onclose=null;if(ws.readyState<=1)ws.close();} } };
@@ -69,10 +37,10 @@ const requestQueue = (() => {
 })();
 
 const klinesCache = new Map();
-async function fetchKlines(exchange, symbol, tf) {
-  const key=`${exchange}:${symbol}:${tf}`;
+async function fetchKlines(symbol, tf) {
+  const key=`${ACTIVE_EXCHANGE}:${symbol}:${tf}`;
   if (klinesCache.has(key)) return klinesCache.get(key);
-  const data = await requestQueue(`${SERVER}/klines?exchange=${exchange}&symbol=${symbol}&interval=${tf}`);
+  const data = await requestQueue(`${SERVER}/klines?symbol=${symbol}&interval=${tf}`);
   if (!Array.isArray(data)) return [];
   klinesCache.set(key, data);
   return data;
@@ -174,7 +142,7 @@ function mergeCandles(older, newer) {
 }
 
 // ─── Компонент графика ────────────────────────────────────────────────────────
-const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchange, isFullscreenMode, onFullscreen, onClose, precomputedStats, fixedHeight, autoSize, watchlist, onToggleWatch, selectedStarColor }) => {
+const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFullscreenMode, onFullscreen, onClose, precomputedStats, fixedHeight, autoSize, watchlist, onToggleWatch, selectedStarColor }) => {
   const chartContainerRef = useRef();
   const chartRef          = useRef(null);
   const candleSeriesRef   = useRef(null);
@@ -261,7 +229,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
       isLoadingMoreRef.current = true;
       if (!cancelled) setLoadingMore(true);
       try {
-        const url = `${SERVER}/klines?exchange=${exchange}&symbol=${symbol}&interval=${localTfRef.current}&before=${first.openTime - 1}`;
+        const url = `${SERVER}/klines?symbol=${symbol}&interval=${localTfRef.current}&before=${first.openTime - 1}`;
         const older = await requestQueue(url);
         if (cancelled) { isLoadingMoreRef.current = false; return; }
         if (!Array.isArray(older) || older.length === 0) {
@@ -288,7 +256,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
       allCandlesRef.current   = [];
       try { chart.remove(); } catch {}
     };
-  }, [symbol, exchange, isFullscreenMode, CHEIGHT, useAutoSize]); // eslint-disable-line
+  }, [symbol, isFullscreenMode, CHEIGHT, useAutoSize]); // eslint-disable-line
 
   // ── Загружаем данные при смене TF (без пересоздания графика) ───────────────
   useEffect(() => {
@@ -305,7 +273,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
       setLoading(true);
       setLoadingMore(false);
 
-      fetchKlines(exchange, symbol, localTf).then(rawData => {
+      fetchKlines(symbol, localTf).then(rawData => {
         if (cancelled || !candleSeriesRef.current) return;
         if (rawData.length > 0) {
           allCandlesRef.current = rawData;
@@ -319,7 +287,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
           if (!cancelled && s) setStats(s);
         }
         if (!cancelled) setLoading(false);
-        if (!cancelled) wsHandle = createExchangeWS(exchange, symbol, localTf, (candle) => {
+        if (!cancelled) wsHandle = createExchangeWS(symbol, localTf, (candle) => {
           if (cancelled||!candleSeriesRef.current||!volumeSeriesRef.current) return;
           const arr = allCandlesRef.current;
           if (arr.length > 0 && arr[arr.length-1].time === candle.time) arr[arr.length-1] = candle;
@@ -338,11 +306,11 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, exchan
       clearTimeout(timer);
       if (wsHandle) wsHandle.close();
     };
-  }, [localTf, symbol, exchange]); // eslint-disable-line
+  }, [localTf, symbol]); // eslint-disable-line
 
   // Пересчёт stats при изменении периодов фильтров
   useEffect(() => {
-    const cached = klinesCache.get(`${exchange}:${symbol}:${localTf}`);
+    const cached = klinesCache.get(`${ACTIVE_EXCHANGE}:${symbol}:${localTf}`);
     if (!cached || !cached.length) return;
     const tfMin = TF_MIN[localTf]||5;
     const s = computeStats(cached, btcMapRef.current, filters, tfMin, symbol);
@@ -438,7 +406,7 @@ const VirtualChartCard = (props) => {
 };
 
 // ─── Список монет ─────────────────────────────────────────────────────────────
-const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor, filters, btcMap, globalTf, defaultSort }) => {
+const CoinList = ({ coins, watchlist, onToggleWatch, selectedStarColor, filters, btcMap, globalTf, defaultSort }) => {
   const [sortCol, setSortCol]         = useState(defaultSort || 'volume');
   const [sortDir, setSortDir]         = useState(-1);
   const [statsMap, setStatsMap]       = useState({});
@@ -456,7 +424,7 @@ const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor
     (async () => {
       await Promise.all(coins.map(async (coin) => {
         try {
-          const rawData = await fetchKlines(exchange, coin.symbol, globalTf);
+          const rawData = await fetchKlines(coin.symbol, globalTf);
           if (cancelled||!rawData.length) return;
           const s = computeStats(rawData, btcMap, filters, tfMin, coin.symbol);
           if (s) map[coin.symbol] = s;
@@ -465,7 +433,7 @@ const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor
       if (!cancelled) setStatsMap({...map});
     })();
     return () => { cancelled=true; };
-  }, [exchange, globalTf, coins.length, btcMap, filters.natrPeriod, filters.volatPeriod, filters.corrPeriod]); // eslint-disable-line
+  }, [globalTf, coins.length, btcMap, filters.natrPeriod, filters.volatPeriod, filters.corrPeriod]); // eslint-disable-line
 
   const sorted = useMemo(() => [...coins].sort((a, b) => {
     const aS=!!watchlist[a.symbol], bS=!!watchlist[b.symbol];
@@ -501,7 +469,7 @@ const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor
       <div className="list-chart-panel">
         {chartCoin && (
           <ChartComponent symbol={chartCoin.symbol} marketStats={chartCoin}
-            globalTf={globalTf} filters={filters} btcMap={btcMap} exchange={exchange}
+            globalTf={globalTf} filters={filters} btcMap={btcMap}
             isFullscreenMode={false} onFullscreen={null}
             precomputedStats={statsMap[chartCoin.symbol]||null} autoSize={true}
             watchlist={watchlist} onToggleWatch={onToggleWatch} selectedStarColor={selectedStarColor}/>
@@ -568,7 +536,6 @@ const defaultTab = { id:1, name:'Основная', globalTf:'5m', filters:defau
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 function App() {
-  const [activeExchange, setActiveExchange] = useState('binance');
   const [marketData, setMarketData]         = useState([]);
   const [activeSymbols, setActiveSymbols]   = useState([]);
   const [isFiltersOpen, setIsFiltersOpen]   = useState(false);
@@ -654,24 +621,23 @@ function App() {
   const fetchMarket = useCallback(() => {
     setLoadingMarket(true); setServerError(false);
     Promise.all([
-      requestQueue(`${SERVER}/symbols?exchange=${activeExchange}`),
-      requestQueue(`${SERVER}/tickers?exchange=${activeExchange}&interval=${activeTab.globalTf}`)
+      requestQueue(`${SERVER}/symbols`),
+      requestQueue(`${SERVER}/tickers`)
     ]).then(([symbols,tickers])=>{
       if(Array.isArray(symbols)) setActiveSymbols(symbols);
       if(Array.isArray(tickers)) setMarketData(tickers);
       if(!Array.isArray(symbols)||!Array.isArray(tickers)) setServerError(true);
     }).catch(()=>{ setServerError(true); }).finally(()=>setLoadingMarket(false));
-  }, [activeExchange, activeTab.globalTf]);
+  }, []);
 
   const fetchBtcMap = useCallback(async (tf) => {
     try {
-      const btcSymbols={binance:'BTCUSDT',bybit:'BTCUSDT',okx:'BTC-USDT-SWAP',gateio:'BTC_USDT',bitget:'BTCUSDT'};
-      const data=await fetchKlines(activeExchange,btcSymbols[activeExchange]||'BTCUSDT',tf);
+      const data=await fetchKlines('BTCUSDT', tf);
       const map=new Map(); data.forEach(d=>map.set(d.openTime,d.close)); setBtcMap(map);
     } catch {}
-  }, [activeExchange]);
+  }, []);
 
-  useEffect(() => { klinesCache.clear(); setMarketData([]); setActiveSymbols([]); setBtcMap(null); setStatsMap({}); fetchMarket(); }, [activeExchange]); // eslint-disable-line
+  useEffect(() => { klinesCache.clear(); setMarketData([]); setActiveSymbols([]); setBtcMap(null); setStatsMap({}); fetchMarket(); }, [fetchMarket]);
   useEffect(() => { setBtcMap(null); fetchBtcMap(activeTab.globalTf); }, [activeTab.globalTf, fetchBtcMap]);
 
   const PERIOD_KEYS = new Set(['natrPeriod','volatPeriod','corrPeriod']);
@@ -707,8 +673,8 @@ function App() {
 
   const needStats = activeTab.id!==1 && hasStatsFilter(activeFilters);
   const depsKey = useMemo(
-    () => preFilteredCoins.map(c=>c.symbol).join(',') + `|${activeExchange}|${activeTab.globalTf}|${activeFilters.natrPeriod}|${activeFilters.volatPeriod}|${activeFilters.corrPeriod}`,
-    [preFilteredCoins, activeExchange, activeTab.globalTf, activeFilters.natrPeriod, activeFilters.volatPeriod, activeFilters.corrPeriod]
+    () => preFilteredCoins.map(c=>c.symbol).join(',') + `|${activeTab.globalTf}|${activeFilters.natrPeriod}|${activeFilters.volatPeriod}|${activeFilters.corrPeriod}`,
+    [preFilteredCoins, activeTab.globalTf, activeFilters.natrPeriod, activeFilters.volatPeriod, activeFilters.corrPeriod]
   );
 
   useEffect(() => {
@@ -722,7 +688,7 @@ function App() {
         if(abort.cancelled) return;
         await Promise.all(symbols.slice(i,i+6).map(async(sym)=>{
           if(abort.cancelled) return;
-          try{const rawData=await fetchKlines(activeExchange,sym,tf);if(abort.cancelled)return;partial[sym]=computeStats(rawData,btcMap,activeFilters,tfMin,sym);}
+          try{const rawData=await fetchKlines(sym,tf);if(abort.cancelled)return;partial[sym]=computeStats(rawData,btcMap,activeFilters,tfMin,sym);}
           catch{partial[sym]=null;}
         }));
         if(!abort.cancelled) setStatsMap({...partial});
@@ -756,7 +722,7 @@ function App() {
         <div className="header-top">
           <div className="logo">Kopi<span className="green-accent">Bar</span></div>
           <div className="exchange-tabs">
-            {EXCHANGES.map(ex=><button key={ex.id} className={`exchange-tab ${activeExchange===ex.id?'active':''}`} onClick={()=>setActiveExchange(ex.id)}>{ex.label}</button>)}
+            <div className="exchange-badge">Binance Futures</div>
           </div>
           <div className="tabs-container">
             {tabs.map(t=>(
@@ -819,8 +785,8 @@ function App() {
               setTabs(tabs.map(t=>t.id===activeTabId?{...t,globalTf:newTf}:t));
               // Prefetch данных ДО перерисовки карточек
               displayCoins.slice(0,30).forEach(c=>{
-                const key=`${activeExchange}:${c.symbol}:${newTf}`;
-                if(!klinesCache.has(key)) fetchKlines(activeExchange,c.symbol,newTf).catch(()=>{});
+                const key=`${ACTIVE_EXCHANGE}:${c.symbol}:${newTf}`;
+                if(!klinesCache.has(key)) fetchKlines(c.symbol,newTf).catch(()=>{});
               });
             }}>
               {timeframes.map(tf=><option key={tf} value={tf}>{tf}</option>)}
@@ -884,7 +850,7 @@ function App() {
 
       {viewMode==='list' && (
         <CoinList coins={listShowAll?allCoins:filteredCoins} defaultSort={listShowAll?'change':'volume'}
-          exchange={activeExchange} watchlist={watchlist} onToggleWatch={toggleWatch}
+          watchlist={watchlist} onToggleWatch={toggleWatch}
           selectedStarColor={selectedStarColor} filters={activeFilters} btcMap={btcMap} globalTf={activeTab.globalTf}/>
       )}
 
@@ -900,9 +866,9 @@ function App() {
         <div className="grid-scroll">
           <div className="grid-box">
             {displayCoins.map(c=>(
-              <VirtualChartCard key={`${activeExchange}-${c.symbol}`} symbol={c.symbol} marketStats={c}
+              <VirtualChartCard key={`${ACTIVE_EXCHANGE}-${c.symbol}`} symbol={c.symbol} marketStats={c}
                 globalTf={activeTab.globalTf} filters={activeFilters} btcMap={btcMap}
-                exchange={activeExchange} precomputedStats={statsMap[c.symbol]||null}
+                precomputedStats={statsMap[c.symbol]||null}
                 watchlist={watchlist} onToggleWatch={toggleWatch} selectedStarColor={selectedStarColor}/>
             ))}
           </div>

@@ -1,16 +1,43 @@
-# React + Vite
+# KopiBar
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+KopiBar is a React interface for monitoring Binance Futures markets.
 
-Currently, two official plugins are available:
+## What is in this repo
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- `src/App.jsx` contains the main application logic: filters, tabs, watchlist, charts, and data loading.
+- `src/App.css` contains the main UI styles.
+- `Документация/` stores project notes and server operation instructions.
 
-## React Compiler
+## Current architecture
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+The interface connects to a separate Node.js server running on a VPS at `http://77.239.105.144:3001`.
 
-## Expanding the ESLint configuration
+The server is stored locally in a separate folder:
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+- frontend: `D:\KopiBar`
+- server copy: `D:\kopibar-server`
+
+Only Binance is supported in the current version. The project was intentionally reduced from multiple exchanges to one exchange to fit VPS limits on disk, RAM, and CPU.
+
+## Frontend start
+
+```bash
+npm install
+npm run dev
+```
+
+## Optional environment variable
+
+You can override the server address without editing code:
+
+```bash
+VITE_KOPIBAR_SERVER=http://77.239.105.144:3001
+```
+
+If the variable is not set, the app uses the same address by default.
+
+## Deploy workflow
+
+1. Edit files locally.
+2. Copy changed frontend or server files to the VPS manually.
+3. Restart the server process on the VPS if `server.js` or `package.json` changed.

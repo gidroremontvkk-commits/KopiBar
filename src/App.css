@@ -72,6 +72,16 @@ body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-se
 
 /* ─── БИРЖИ ─────────────────────────────────────────────────────────────────── */
 .exchange-tabs { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
+.exchange-badge {
+  background: #00ff9d18;
+  border: 1px solid #00ff9d;
+  color: #00ff9d;
+  padding: 5px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
 .exchange-tab {
   background: transparent;
   border: 1px solid #2a2a2e;

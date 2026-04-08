@@ -351,3 +351,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`   Биржи: ${Object.keys(EXCHANGES).join(', ')}`);
   console.log(`   Проверка: http://77.239.105.144:${PORT}/ping`);
 });
+/**
+ * HISTORICAL REFERENCE ONLY.
+ * This file describes the older multi-exchange proxy version.
+ * The current production server is the Binance-only server in D:\kopibar-server\server.js.
+ */
