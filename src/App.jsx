@@ -5,10 +5,12 @@ import './App.css';
 
 const SERVER = import.meta.env.VITE_KOPIBAR_SERVER || 'http://77.239.105.144:3001';
 const ACTIVE_EXCHANGE = 'binance';
+const KLINES_CACHE_TTL_MS = 15_000;
 
 const timeframes = ['1m', '5m', '15m', '1h', '4h', '1d'];
 const TF_MIN = { '1m':1,'5m':5,'15m':15,'1h':60,'4h':240,'1d':1440 };
 const CHART_HEADER_H = 71;
+const OHLCV_BAR_H = 26;
 
 const STAR_COLORS = [
   { key:'yellow', hex:'#f0c040', label:'Жёлтый'    },
@@ -27,7 +29,52 @@ function createExchangeWS(symbol, interval, onCandle) {
     ws.onmessage = (e) => { try { const msg=JSON.parse(e.data); if(msg.e==='kline'){const k=msg.k; onCandle({time:k.t/1000,open:+k.o,high:+k.h,low:+k.l,close:+k.c,volume:+k.v,openTime:k.t});} } catch {} };
     if (ws) { ws.onerror=()=>{}; ws.onclose=()=>{}; }
   } catch {}
-  return { close: () => { if(pingInterval) clearInterval(pingInterval); if(ws){ws.onmessage=null;ws.onerror=null;ws.onclose=null;if(ws.readyState<=1)ws.close();} } };
+  return {
+    close: () => {
+      if (pingInterval) clearInterval(pingInterval);
+      if (!ws) return;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      if (ws.readyState === WebSocket.CONNECTING) {
+        ws.onopen = () => ws.close();
+        return;
+      }
+      if (ws.readyState === WebSocket.OPEN) ws.close();
+    }
+  };
+}
+
+function normalizeCandle(candle) {
+  const time = Number(candle?.time);
+  const open = Number(candle?.open);
+  const high = Number(candle?.high);
+  const low = Number(candle?.low);
+  const close = Number(candle?.close);
+  const volume = Number(candle?.volume ?? 0);
+  const openTime = Number(candle?.openTime ?? time * 1000);
+
+  if (![time, open, high, low, close, volume, openTime].every(Number.isFinite)) return null;
+
+  return {
+    time,
+    open,
+    high: Math.max(high, open, close),
+    low: Math.min(low, open, close),
+    close,
+    volume,
+    openTime,
+  };
+}
+
+function prepareCandles(rows) {
+  const byTime = new Map();
+  for (const row of rows || []) {
+    const candle = normalizeCandle(row);
+    if (!candle) continue;
+    byTime.set(candle.time, candle);
+  }
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
 }
 
 const requestQueue = (() => {
@@ -36,13 +83,41 @@ const requestQueue = (() => {
   return (url)=>new Promise((resolve,reject)=>{ queue.push({url,resolve,reject}); run(); });
 })();
 
+const statsCache = new Map();
+async function fetchServerStats(tf, filters) {
+  const natrPeriod = filters?.natrPeriod || 2;
+  const volatPeriod = filters?.volatPeriod || 6;
+  const corrPeriod = filters?.corrPeriod || 1;
+  const key = `${tf}|${natrPeriod}|${volatPeriod}|${corrPeriod}`;
+  const cached = statsCache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < KLINES_CACHE_TTL_MS) return cached.data;
+  const url = `${SERVER}/stats?tf=${encodeURIComponent(tf)}&natrPeriod=${encodeURIComponent(natrPeriod)}&volatPeriod=${encodeURIComponent(volatPeriod)}&corrPeriod=${encodeURIComponent(corrPeriod)}`;
+  const data = await requestQueue(url);
+  const normalized = data && typeof data === 'object' ? data : {};
+  statsCache.set(key, { data: normalized, fetchedAt: Date.now() });
+  return normalized;
+}
+
 const klinesCache = new Map();
+const klinesPending = new Map();
 async function fetchKlines(symbol, tf) {
   const key=`${ACTIVE_EXCHANGE}:${symbol}:${tf}`;
-  if (klinesCache.has(key)) return klinesCache.get(key);
-  const data = await requestQueue(`${SERVER}/klines?symbol=${symbol}&interval=${tf}`);
+  const cached = klinesCache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < KLINES_CACHE_TTL_MS) return cached.data;
+  if (klinesPending.has(key)) return klinesPending.get(key);
+  const pending = requestQueue(`${SERVER}/klines?symbol=${symbol}&interval=${tf}`)
+    .then((data) => {
+      if (!Array.isArray(data)) return [];
+      const prepared = prepareCandles(data);
+      klinesCache.set(key, { data: prepared, fetchedAt: Date.now() });
+      return prepared;
+    })
+    .finally(() => {
+      klinesPending.delete(key);
+    });
+  klinesPending.set(key, pending);
+  const data = await pending;
   if (!Array.isArray(data)) return [];
-  klinesCache.set(key, data);
   return data;
 }
 
@@ -76,11 +151,37 @@ const calculateVolatility = (data, periodHours, tfMin) => {
   const slice=data.slice(-n);
   if (slice.length<2) return 0;
   const ret=[];
-  for (let i=1;i<slice.length;i++) if(slice[i-1].close>0&&slice[i].close>0) ret.push(Math.log(slice[i].close/slice[i-1].close));
-  if (ret.length<2) return 0;
+  for (let i=1;i<slice.length;i++) {
+    if(slice[i-1].close>0&&slice[i].close>0) ret.push((slice[i].close-slice[i-1].close)/slice[i-1].close);
+  }
+  if (ret.length===0) return 0;
+  if (ret.length===1) return Math.abs(ret[0])*100;
   const mean=ret.reduce((a,b)=>a+b,0)/ret.length;
   return Math.sqrt(ret.reduce((s,r)=>s+(r-mean)**2,0)/(ret.length-1))*100;
 };
+
+async function loadStatsForSymbols(symbols, tf, filters, btcMap, onProgress, signal) {
+  const tfMin = TF_MIN[tf] || 5;
+  const partial = {};
+  let cursor = 0;
+  const workerCount = Math.min(6, symbols.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (!signal?.cancelled) {
+      const index = cursor++;
+      if (index >= symbols.length) return;
+      const sym = symbols[index];
+      try {
+        const rawData = await fetchKlines(sym, tf);
+        if (signal?.cancelled) return;
+        partial[sym] = computeStats(rawData, btcMap, filters, tfMin, sym);
+      } catch {
+        partial[sym] = null;
+      }
+      if (!signal?.cancelled && onProgress) onProgress({ ...partial });
+    }
+  }));
+  return partial;
+}
 
 function computeStats(rawData, btcMap, filters, tfMin, symbol) {
   if (!rawData||rawData.length<2) return null;
@@ -91,8 +192,11 @@ function computeStats(rawData, btcMap, filters, tfMin, symbol) {
   let corr=null;
   if (symbol.replace(/[-_].*/,'').toUpperCase().startsWith('BTC')) { corr=100; }
   else if (btcMap) {
-    const corrN=Math.max(10,Math.round(((filters.corrPeriod||1)*60)/tfMin));
-    const slice=rawData.slice(-corrN).map(d=>({...d,btcClose:btcMap.get(d.openTime)}));
+    const corrN=Math.max(3,Math.round(((filters.corrPeriod||1)*60)/tfMin));
+    const slice=rawData
+      .map(d=>({...d,btcClose:btcMap.get(d.openTime)}))
+      .filter(d => d.btcClose != null)
+      .slice(-corrN);
     corr=calculateCorrelation(slice);
     if (corr!==null) corr=Math.round(corr);
   }
@@ -152,6 +256,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
   const isLoadingMoreRef  = useRef(false);
   const hasMoreRef        = useRef(true);
   const localTfRef        = useRef(globalTf);
+  const isHoveringRef     = useRef(false);
 
   const CHEIGHT = fixedHeight || 340;
   const useAutoSize = autoSize && !isFullscreenMode;
@@ -173,7 +278,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
       if (useAutoSize) return;
       chartRef.current.applyOptions({
         width:  isFullscreenMode ? window.innerWidth : chartContainerRef.current.clientWidth,
-        height: isFullscreenMode ? window.innerHeight - CHART_HEADER_H : CHEIGHT,
+        height: isFullscreenMode ? window.innerHeight - CHART_HEADER_H - OHLCV_BAR_H : CHEIGHT - OHLCV_BAR_H,
       });
     };
     window.addEventListener('resize', h);
@@ -193,7 +298,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
     let cancelled = false;
 
     const w = isFullscreenMode ? window.innerWidth : (chartContainerRef.current.clientWidth||800);
-    const h = isFullscreenMode ? window.innerHeight - CHART_HEADER_H : CHEIGHT;
+    const h = isFullscreenMode ? window.innerHeight - CHART_HEADER_H - OHLCV_BAR_H : CHEIGHT - OHLCV_BAR_H;
 
     const chart = LightweightCharts.createChart(chartContainerRef.current, {
       layout: { background:{type:LightweightCharts.ColorType.Solid,color:'#0d0d0f'}, textColor:'#a1a1aa' },
@@ -214,10 +319,19 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
 
     chart.subscribeCrosshairMove((param) => {
       if (cancelled) return;
-      if (!param.time||!param.seriesData) { setCrosshair(null); return; }
+      if (!param.time||!param.seriesData) {
+        isHoveringRef.current = false;
+        const last = allCandlesRef.current[allCandlesRef.current.length - 1];
+        if (last) setCrosshair(last);
+        return;
+      }
+      isHoveringRef.current = true;
       const c=param.seriesData.get(candleSeries), v=param.seriesData.get(volumeSeries);
       if (c) setCrosshair({open:c.open,high:c.high,low:c.low,close:c.close,volume:v?.value??0});
-      else setCrosshair(null);
+      else {
+        const last = allCandlesRef.current[allCandlesRef.current.length - 1];
+        if (last) setCrosshair(last);
+      }
     });
 
     // Lazy loading при скролле влево
@@ -229,7 +343,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
       isLoadingMoreRef.current = true;
       if (!cancelled) setLoadingMore(true);
       try {
-        const url = `${SERVER}/klines?symbol=${symbol}&interval=${localTfRef.current}&before=${first.openTime - 1}`;
+        const url = `${SERVER}/klines?symbol=${symbol}&interval=${localTfRef.current}&before=${first.time - 1}`;
         const older = await requestQueue(url);
         if (cancelled) { isLoadingMoreRef.current = false; return; }
         if (!Array.isArray(older) || older.length === 0) {
@@ -254,6 +368,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
       volumeSeriesRef.current = null;
       chartRef.current        = null;
       allCandlesRef.current   = [];
+      isHoveringRef.current   = false;
       try { chart.remove(); } catch {}
     };
   }, [symbol, isFullscreenMode, CHEIGHT, useAutoSize]); // eslint-disable-line
@@ -276,24 +391,31 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
       fetchKlines(symbol, localTf).then(rawData => {
         if (cancelled || !candleSeriesRef.current) return;
         if (rawData.length > 0) {
-          allCandlesRef.current = rawData;
-          candleSeriesRef.current.setData(rawData);
-          const lastPrice = rawData[rawData.length-1].close;
+          const prepared = prepareCandles(rawData);
+          allCandlesRef.current = prepared;
+          candleSeriesRef.current.setData(prepared);
+          const lastPrice = prepared[prepared.length-1].close;
           candleSeriesRef.current.applyOptions({ priceFormat:{type:'price',...getPriceFormat(lastPrice)} });
-          volumeSeriesRef.current.setData(rawData.map(d => ({ time:d.time, value:d.volume, color:d.close>=d.open?'rgba(0,255,157,0.5)':'rgba(255,59,59,0.5)' })));
+          volumeSeriesRef.current.setData(prepared.map(d => ({ time:d.time, value:d.volume, color:d.close>=d.open?'rgba(0,255,157,0.5)':'rgba(255,59,59,0.5)' })));
           chartRef.current.timeScale().scrollToRealTime();
-          const tfMin = TF_MIN[localTf]||5;
-          const s = computeStats(rawData, btcMapRef.current, filters, tfMin, symbol);
-          if (!cancelled && s) setStats(s);
+          if (!precomputedStats) {
+            const tfMin = TF_MIN[localTf]||5;
+            const s = computeStats(prepared, btcMapRef.current, filters, tfMin, symbol);
+            if (!cancelled && s) setStats(s);
+          }
+          if (!cancelled) setCrosshair(prepared[prepared.length - 1]);
         }
         if (!cancelled) setLoading(false);
         if (!cancelled) wsHandle = createExchangeWS(symbol, localTf, (candle) => {
           if (cancelled||!candleSeriesRef.current||!volumeSeriesRef.current) return;
+          const nextCandle = normalizeCandle(candle);
+          if (!nextCandle) return;
           const arr = allCandlesRef.current;
-          if (arr.length > 0 && arr[arr.length-1].time === candle.time) arr[arr.length-1] = candle;
-          else if (!arr.length || candle.time > arr[arr.length-1].time) arr.push(candle);
-          candleSeriesRef.current.update(candle);
-          volumeSeriesRef.current.update({ time:candle.time, value:candle.volume, color:candle.close>=candle.open?'rgba(0,255,157,0.5)':'rgba(255,59,59,0.5)' });
+          if (arr.length > 0 && arr[arr.length-1].time === nextCandle.time) arr[arr.length-1] = nextCandle;
+          else if (!arr.length || nextCandle.time > arr[arr.length-1].time) arr.push(nextCandle);
+          candleSeriesRef.current.update(nextCandle);
+          volumeSeriesRef.current.update({ time:nextCandle.time, value:nextCandle.volume, color:nextCandle.close>=nextCandle.open?'rgba(0,255,157,0.5)':'rgba(255,59,59,0.5)' });
+          if (!isHoveringRef.current) setCrosshair(nextCandle);
         });
       });
     };
@@ -310,8 +432,9 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
 
   // Пересчёт stats при изменении периодов фильтров
   useEffect(() => {
-    const cached = klinesCache.get(`${ACTIVE_EXCHANGE}:${symbol}:${localTf}`);
+    const cached = klinesCache.get(`${ACTIVE_EXCHANGE}:${symbol}:${localTf}`)?.data;
     if (!cached || !cached.length) return;
+    if (precomputedStats) return;
     const tfMin = TF_MIN[localTf]||5;
     const s = computeStats(cached, btcMapRef.current, filters, tfMin, symbol);
     if (s) setStats(s);
@@ -349,7 +472,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
           <span className="ohlcv-label">Объём</span><span className="ohlcv-val ohlcv-vol">{fmtVol(crosshair.volume)}</span>
         </>}
       </div>
-      <div className="chart-relative-container" style={ useAutoSize ? {flex:1,minHeight:0} : { height: isFullscreenMode ? `calc(100vh - ${CHART_HEADER_H}px)` : `${CHEIGHT}px` } }>
+      <div className="chart-relative-container" style={ useAutoSize ? {flex:1,minHeight:0} : { height: isFullscreenMode ? `calc(100vh - ${CHART_HEADER_H + OHLCV_BAR_H}px)` : `${CHEIGHT - OHLCV_BAR_H}px` } }>
         {loading && <div className="chart-loader"><div className="scanner-line"></div><div className="loader-info"><div className="loader-ticker">{symbol.replace(/[-_]?USDT.*/i,'')}</div><div className="loader-status">DECODING DATA...</div></div></div>}
         {loadingMore && !loading && (
           <div style={{position:'absolute',top:8,left:'50%',transform:'translateX(-50%)',zIndex:20,background:'rgba(0,0,0,0.7)',color:'#00ff9d',fontSize:11,padding:'3px 10px',borderRadius:4,pointerEvents:'none'}}>
@@ -406,34 +529,15 @@ const VirtualChartCard = (props) => {
 };
 
 // ─── Список монет ─────────────────────────────────────────────────────────────
-const CoinList = ({ coins, watchlist, onToggleWatch, selectedStarColor, filters, btcMap, globalTf, defaultSort }) => {
+const CoinList = ({ coins, watchlist, onToggleWatch, selectedStarColor, statsMap, globalTf, defaultSort, filters, btcMap }) => {
+  const containerRef = useRef(null);
   const [sortCol, setSortCol]         = useState(defaultSort || 'volume');
   const [sortDir, setSortDir]         = useState(-1);
-  const [statsMap, setStatsMap]       = useState({});
   const [selectedSymbol, setSelectedSymbol] = useState(null);
 
   useEffect(() => { setSortCol(defaultSort || 'volume'); setSortDir(-1); }, [defaultSort]);
 
   const handleSort = (col) => { if(sortCol===col) setSortDir(d=>-d); else {setSortCol(col);setSortDir(-1);} };
-
-  useEffect(() => {
-    if (!coins.length) return;
-    let cancelled = false;
-    const tfMin = TF_MIN[globalTf]||5;
-    const map = {};
-    (async () => {
-      await Promise.all(coins.map(async (coin) => {
-        try {
-          const rawData = await fetchKlines(coin.symbol, globalTf);
-          if (cancelled||!rawData.length) return;
-          const s = computeStats(rawData, btcMap, filters, tfMin, coin.symbol);
-          if (s) map[coin.symbol] = s;
-        } catch {}
-      }));
-      if (!cancelled) setStatsMap({...map});
-    })();
-    return () => { cancelled=true; };
-  }, [globalTf, coins.length, btcMap, filters.natrPeriod, filters.volatPeriod, filters.corrPeriod]); // eslint-disable-line
 
   const sorted = useMemo(() => [...coins].sort((a, b) => {
     const aS=!!watchlist[a.symbol], bS=!!watchlist[b.symbol];
@@ -458,6 +562,32 @@ const CoinList = ({ coins, watchlist, onToggleWatch, selectedStarColor, filters,
     return sym ? (coins.find(c=>c.symbol===sym) || sorted[0]) : null;
   }, [selectedSymbol, sorted, coins]);
 
+  useEffect(() => {
+    if (!sorted.length) return;
+    if (!selectedSymbol || !sorted.some((coin) => coin.symbol === selectedSymbol)) {
+      setSelectedSymbol(sorted[0].symbol);
+    }
+  }, [sorted, selectedSymbol]);
+
+  const handleListKeyDown = useCallback((e) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const tag = e.target?.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return;
+    if (!sorted.length) return;
+    e.preventDefault();
+    const currentIndex = Math.max(0, sorted.findIndex((coin) => coin.symbol === chartCoin?.symbol));
+    const nextIndex = e.key === 'ArrowDown'
+      ? Math.min(sorted.length - 1, currentIndex + 1)
+      : Math.max(0, currentIndex - 1);
+    const nextSymbol = sorted[nextIndex]?.symbol;
+    if (!nextSymbol) return;
+    setSelectedSymbol(nextSymbol);
+    requestAnimationFrame(() => {
+      const row = containerRef.current?.querySelector(`[data-symbol="${nextSymbol}"]`);
+      row?.scrollIntoView({ block: 'nearest' });
+    });
+  }, [sorted, chartCoin]);
+
   const Th = ({col, label}) => (
     <th className={`list-th ${sortCol===col?'active':''}`} onClick={()=>handleSort(col)}>
       {label}{sortCol===col?(sortDir===-1?' ↓':' ↑'):''}
@@ -465,10 +595,10 @@ const CoinList = ({ coins, watchlist, onToggleWatch, selectedStarColor, filters,
   );
 
   return (
-    <div className="list-split-view">
+    <div className="list-split-view" ref={containerRef} tabIndex={0} onKeyDown={handleListKeyDown}>
       <div className="list-chart-panel">
         {chartCoin && (
-          <ChartComponent symbol={chartCoin.symbol} marketStats={chartCoin}
+          <ChartComponent key={`${chartCoin.symbol}:${globalTf}`} symbol={chartCoin.symbol} marketStats={chartCoin}
             globalTf={globalTf} filters={filters} btcMap={btcMap}
             isFullscreenMode={false} onFullscreen={null}
             precomputedStats={statsMap[chartCoin.symbol]||null} autoSize={true}
@@ -497,6 +627,7 @@ const CoinList = ({ coins, watchlist, onToggleWatch, selectedStarColor, filters,
                 const isSelected=coin.symbol===chartCoin?.symbol;
                 return (
                   <tr key={coin.symbol}
+                    data-symbol={coin.symbol}
                     className={`list-row ${starKey?'starred':''} ${isSelected?'list-row-selected':''}`}
                     onClick={()=>setSelectedSymbol(coin.symbol)} style={{cursor:'pointer'}}>
                     <td onClick={e=>e.stopPropagation()}>
@@ -672,31 +803,28 @@ function App() {
   [marketData, activeSymbols]);
 
   const needStats = activeTab.id!==1 && hasStatsFilter(activeFilters);
+  const shouldLoadStats = needStats || viewMode === 'list' || viewMode === 'watchlist';
+  const statsSourceCoins = viewMode === 'list' && listShowAll ? allCoins : preFilteredCoins;
   const depsKey = useMemo(
-    () => preFilteredCoins.map(c=>c.symbol).join(',') + `|${activeTab.globalTf}|${activeFilters.natrPeriod}|${activeFilters.volatPeriod}|${activeFilters.corrPeriod}`,
-    [preFilteredCoins, activeTab.globalTf, activeFilters.natrPeriod, activeFilters.volatPeriod, activeFilters.corrPeriod]
+    () => statsSourceCoins.map(c=>c.symbol).join(',') + `|${activeTab.globalTf}|${activeFilters.natrPeriod}|${activeFilters.volatPeriod}|${activeFilters.corrPeriod}|${viewMode}|${listShowAll}`,
+    [statsSourceCoins, activeTab.globalTf, activeFilters.natrPeriod, activeFilters.volatPeriod, activeFilters.corrPeriod, viewMode, listShowAll]
   );
 
   useEffect(() => {
-    if (!needStats||!preFilteredCoins.length) { setStatsMap({}); setStatsLoading(false); return; }
+    if (!shouldLoadStats || !allCoins.length) { setStatsMap({}); setStatsLoading(false); return; }
     const abort={cancelled:false}; statsAbortRef.current=abort;
-    setStatsMap({}); setStatsLoading(true);
-    const tf=activeTab.globalTf, tfMin=TF_MIN[tf]||5, partial={};
+    setStatsLoading(true);
     (async()=>{
-      const symbols=preFilteredCoins.map(c=>c.symbol);
-      for(let i=0;i<symbols.length;i+=6){
-        if(abort.cancelled) return;
-        await Promise.all(symbols.slice(i,i+6).map(async(sym)=>{
-          if(abort.cancelled) return;
-          try{const rawData=await fetchKlines(sym,tf);if(abort.cancelled)return;partial[sym]=computeStats(rawData,btcMap,activeFilters,tfMin,sym);}
-          catch{partial[sym]=null;}
-        }));
-        if(!abort.cancelled) setStatsMap({...partial});
+      try {
+        const next = await fetchServerStats(activeTab.globalTf, activeFilters);
+        if(!abort.cancelled) setStatsMap(next);
+      } catch {
+        if(!abort.cancelled) setStatsMap({});
       }
       if(!abort.cancelled) setStatsLoading(false);
     })();
     return()=>{abort.cancelled=true;};
-  }, [depsKey, btcMap, needStats]); // eslint-disable-line
+  }, [depsKey, shouldLoadStats, allCoins.length, activeTab.globalTf, activeFilters]); // eslint-disable-line
 
   const filteredCoins = useMemo(() => {
     if (!needStats) return preFilteredCoins;
@@ -707,14 +835,14 @@ function App() {
     });
   }, [preFilteredCoins, statsMap, activeFilters, needStats]);
 
-  const watchlistCoins = useMemo(() => filteredCoins.filter(c=>{
+  const watchlistCoins = useMemo(() => allCoins.filter(c=>{
     if(!watchlist[c.symbol]) return false;
     if(watchColorFilter&&watchlist[c.symbol]!==watchColorFilter) return false;
     return true;
-  }), [filteredCoins, watchlist, watchColorFilter]);
+  }), [allCoins, watchlist, watchColorFilter]);
 
   const displayCoins   = viewMode==='watchlist' ? watchlistCoins : filteredCoins;
-  const analyzingCount = needStats&&statsLoading ? preFilteredCoins.filter(c=>statsMap[c.symbol]===undefined).length : 0;
+  const analyzingCount = needStats&&statsLoading ? statsSourceCoins.filter(c=>statsMap[c.symbol]===undefined).length : 0;
 
   return (
     <div className="app-container">
@@ -748,9 +876,13 @@ function App() {
               <button className={`view-btn ${viewMode==='charts'?'active':''}`} onClick={()=>setViewMode('charts')}><span className="view-btn-icon">⊞</span><span className="view-btn-label">Графики</span></button>
               <button className={`view-btn ${viewMode==='list'?'active':''}`} onClick={()=>setViewMode('list')}><span className="view-btn-icon">☰</span><span className="view-btn-label">Список</span></button>
               {viewMode==='list' && (
-                <button className={`view-btn list-show-all-btn ${listShowAll?'active':''}`} onClick={()=>setListShowAll(v=>!v)}>
+                <>
+                  <button className={`view-btn list-show-all-btn ${!listShowAll?'active':''}`} onClick={()=>setListShowAll(false)}>По фильтрам</button>
+                  <button className={`view-btn list-show-all-btn ${listShowAll?'active':''}`} onClick={()=>setListShowAll(true)}>Все монеты</button>
+                  <button style={{display:'none'}} className={`view-btn list-show-all-btn ${listShowAll?'active':''}`} onClick={()=>setListShowAll(v=>!v)}>
                   {listShowAll ? 'Все монеты' : 'По фильтрам'}
-                </button>
+                  </button>
+                </>
               )}
               <div className="watchlist-btn-wrap" ref={watchDropRef}>
                 <button className={`view-btn ${viewMode==='watchlist'?'active':''}`} onClick={()=>setViewMode('watchlist')}>
@@ -786,7 +918,8 @@ function App() {
               // Prefetch данных ДО перерисовки карточек
               displayCoins.slice(0,30).forEach(c=>{
                 const key=`${ACTIVE_EXCHANGE}:${c.symbol}:${newTf}`;
-                if(!klinesCache.has(key)) fetchKlines(c.symbol,newTf).catch(()=>{});
+                const cached = klinesCache.get(key);
+                if(!cached || Date.now() - cached.fetchedAt >= KLINES_CACHE_TTL_MS) fetchKlines(c.symbol,newTf).catch(()=>{});
               });
             }}>
               {timeframes.map(tf=><option key={tf} value={tf}>{tf}</option>)}
@@ -851,7 +984,8 @@ function App() {
       {viewMode==='list' && (
         <CoinList coins={listShowAll?allCoins:filteredCoins} defaultSort={listShowAll?'change':'volume'}
           watchlist={watchlist} onToggleWatch={toggleWatch}
-          selectedStarColor={selectedStarColor} filters={activeFilters} btcMap={btcMap} globalTf={activeTab.globalTf}/>
+          selectedStarColor={selectedStarColor} statsMap={statsMap} globalTf={activeTab.globalTf}
+          filters={activeFilters} btcMap={btcMap}/>
       )}
 
       {viewMode==='watchlist' && watchlistCoins.length===0 && (

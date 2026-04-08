@@ -336,7 +336,7 @@ body { background: #000; overflow-x: hidden; font-family: -apple-system, sans-se
   display: flex; align-items: center; gap: 5px;
   padding: 0 15px; background: #111113; border-bottom: 1px solid #1f1f22;
   font-size: 11px; overflow: hidden; white-space: nowrap; pointer-events: none;
-  height: 0; opacity: 0; transition: height 0.12s ease, opacity 0.12s ease;
+  height: 26px; opacity: 1; transition: none;
 }
 .ohlcv-bar-visible { height: 26px; opacity: 1; }
 .ohlcv-label { color: #555; font-weight: 700; font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
