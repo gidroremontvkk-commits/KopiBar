@@ -121,6 +121,83 @@ async function fetchKlines(symbol, tf) {
   return data;
 }
 
+const DRAWINGS_STORAGE_KEY = 'kopibar_drawings_v1';
+const ALERT_HISTORY_STORAGE_KEY = 'kopibar_alert_history_v1';
+const ALERT_SOUND_STORAGE_KEY = 'kopibar_alert_sound_v1';
+const MAGNET_THRESHOLD_PX = 24;
+const DRAWINGS_SYNC_EVENT = 'kopibar:drawings-sync';
+
+const readStorageJson = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const writeStorageJson = (key, value) => {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+};
+
+const getDrawingScopeKey = (symbol, tf) => `${symbol}|${tf}`;
+
+const loadChartDrawings = (symbol, tf) => {
+  const store = readStorageJson(DRAWINGS_STORAGE_KEY, {});
+  const key = getDrawingScopeKey(symbol, tf);
+  return Array.isArray(store[key]) ? store[key] : [];
+};
+
+const saveChartDrawings = (symbol, tf, drawings, sourceId = null) => {
+  const store = readStorageJson(DRAWINGS_STORAGE_KEY, {});
+  const key = getDrawingScopeKey(symbol, tf);
+  store[key] = drawings;
+  writeStorageJson(DRAWINGS_STORAGE_KEY, store);
+  try {
+    window.dispatchEvent(new CustomEvent(DRAWINGS_SYNC_EVENT, { detail: { key, drawings, sourceId } }));
+  } catch {}
+};
+
+const makeId = (prefix = 'id') => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+const roundPriceValue = (value) => Number(Number(value || 0).toFixed(6));
+const trimTrailingZeros = (value) => String(value).replace(/(\.\d*?[1-9])0+$/u, '$1').replace(/\.0+$/u, '').replace(/\.$/u, '');
+const isLineTool = (type) => type === 'trend' || type === 'ray' || type === 'arrow';
+const getMidPoint = (a, b) => ({ time: (a.time + b.time) / 2, price: (a.price + b.price) / 2 });
+
+function pointToSegmentDistance(px, py, ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  if (!dx && !dy) return Math.hypot(px - ax, py - ay);
+  const t = clamp(((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy), 0, 1);
+  const cx = ax + t * dx;
+  const cy = ay + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+
+function extendSegmentToBounds(a, b, width, extendLeft, extendRight) {
+  if (!extendLeft && !extendRight) return [a, b];
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  if (Math.abs(dx) < 0.0001) return [a, b];
+  const points = [];
+  const projectY = (x) => a.y + ((x - a.x) / dx) * dy;
+  if (extendLeft) points.push({ x: 0, y: projectY(0) });
+  else points.push(a);
+  if (extendRight) points.push({ x: width, y: projectY(width) });
+  else points.push(b);
+  return points;
+}
+
+function getArrowHeadPoints(a, b, size = 10) {
+  const angle = Math.atan2(b.y - a.y, b.x - a.x);
+  return [
+    { x: b.x - size * Math.cos(angle - Math.PI / 6), y: b.y - size * Math.sin(angle - Math.PI / 6) },
+    { x: b.x, y: b.y },
+    { x: b.x - size * Math.cos(angle + Math.PI / 6), y: b.y - size * Math.sin(angle + Math.PI / 6) },
+  ];
+}
+
 const calculateCorrelation = (data) => {
   if (data.length < 2) return null;
   const x=[], y=[];
@@ -246,26 +323,422 @@ function mergeCandles(older, newer) {
 }
 
 // ─── Компонент графика ────────────────────────────────────────────────────────
-const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFullscreenMode, onFullscreen, onClose, precomputedStats, fixedHeight, autoSize, watchlist, onToggleWatch, selectedStarColor }) => {
+const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFullscreenMode, onFullscreen, onClose, precomputedStats, fixedHeight, autoSize, watchlist, onToggleWatch, selectedStarColor, enableDrawingTools = false, onAlertTriggered }) => {
   const chartContainerRef = useRef();
+  const overlayRef        = useRef(null);
   const chartRef          = useRef(null);
   const candleSeriesRef   = useRef(null);
   const volumeSeriesRef   = useRef(null);
+  const futureScaleSeriesRef = useRef(null);
   const btcMapRef         = useRef(btcMap);
   const allCandlesRef     = useRef([]);
   const isLoadingMoreRef  = useRef(false);
   const hasMoreRef        = useRef(true);
   const localTfRef        = useRef(globalTf);
   const isHoveringRef     = useRef(false);
+  const drawingsRef       = useRef([]);
+  const drawingInstanceIdRef = useRef(makeId('drawing_scope'));
 
   const CHEIGHT = fixedHeight || 340;
   const useAutoSize = autoSize && !isFullscreenMode;
+  const canDraw = enableDrawingTools;
 
   const [localTf, setLocalTf]     = useState(globalTf);
   const [stats, setStats]         = useState(precomputedStats || {});
   const [loading, setLoading]     = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [crosshair, setCrosshair] = useState(null);
+  const [drawings, setDrawings] = useState([]);
+  const [activeTool, setActiveTool] = useState('select');
+  const [selectedDrawingIds, setSelectedDrawingIds] = useState([]);
+  const [draftDrawing, setDraftDrawing] = useState(null);
+  const [dragState, setDragState] = useState(null);
+  const [magnetMode, setMagnetMode] = useState(true);
+  const [cursorGuide, setCursorGuide] = useState(null);
+  const [, setOverlayRefreshTick] = useState(0);
+  const overlayRefreshRafRef = useRef(0);
+  const overlayRefreshUntilRef = useRef(0);
+
+  const requestOverlayRefresh = useCallback((durationMs = 0) => {
+    if (durationMs > 0) {
+      overlayRefreshUntilRef.current = Math.max(
+        overlayRefreshUntilRef.current,
+        performance.now() + durationMs
+      );
+    }
+    if (overlayRefreshRafRef.current) return;
+    overlayRefreshRafRef.current = requestAnimationFrame(() => {
+      overlayRefreshRafRef.current = 0;
+      setOverlayRefreshTick((tick) => tick + 1);
+      if (performance.now() < overlayRefreshUntilRef.current) {
+        requestOverlayRefresh();
+      }
+    });
+  }, []);
+
+  useEffect(() => { drawingsRef.current = drawings; }, [drawings]);
+  const updateDrawingsState = useCallback((updater) => {
+    commitDrawings((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      drawingsRef.current = next;
+      return next;
+    });
+  }, []);
+  const persistCurrentDrawings = useCallback((nextDrawings) => {
+    saveChartDrawings(symbol, localTfRef.current || localTf, nextDrawings, drawingInstanceIdRef.current);
+  }, [localTf, symbol]);
+  const commitDrawings = useCallback((updater) => {
+    setDrawings((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      drawingsRef.current = next;
+      persistCurrentDrawings(next);
+      return next;
+    });
+  }, [persistCurrentDrawings]);
+  useEffect(() => {
+    const next = loadChartDrawings(symbol, localTf);
+    drawingsRef.current = next;
+    setDrawings(next);
+    setSelectedDrawingIds([]);
+    setDraftDrawing(null);
+    setActiveTool('select');
+  }, [symbol, localTf]);
+  useEffect(() => {
+    const key = getDrawingScopeKey(symbol, localTf);
+    const handleSync = (event) => {
+      const detail = event.detail || {};
+      if (detail.sourceId === drawingInstanceIdRef.current) return;
+      if (detail.key !== key) return;
+      const next = Array.isArray(detail.drawings) ? detail.drawings : [];
+      drawingsRef.current = next;
+      setDrawings(next);
+    };
+    window.addEventListener(DRAWINGS_SYNC_EVENT, handleSync);
+    return () => window.removeEventListener(DRAWINGS_SYNC_EVENT, handleSync);
+  }, [symbol, localTf]);
+  useEffect(() => () => {
+    if (overlayRefreshRafRef.current) cancelAnimationFrame(overlayRefreshRafRef.current);
+    overlayRefreshRafRef.current = 0;
+    overlayRefreshUntilRef.current = 0;
+  }, []);
+
+  const getNearestCandleByX = useCallback((x) => {
+    if (!chartRef.current) return null;
+    let best = null;
+    let bestDist = Infinity;
+    for (const candle of allCandlesRef.current) {
+      const cx = chartRef.current.timeScale().timeToCoordinate(candle.time);
+      if (!Number.isFinite(cx)) continue;
+      const dist = Math.abs(cx - x);
+      if (dist < bestDist) {
+        best = candle;
+        bestDist = dist;
+      }
+    }
+    return best;
+  }, []);
+
+  const getTfStepSec = useCallback(() => {
+    const tf = localTfRef.current || localTf;
+    return (TF_MIN[tf] || 5) * 60;
+  }, [localTf]);
+
+  const buildFutureScaleData = useCallback((candles) => {
+    if (!Array.isArray(candles) || !candles.length) return [];
+    const last = candles[candles.length - 1];
+    const stepSec = getTfStepSec();
+    const futureBars = 120;
+    return Array.from({ length: futureBars }, (_, index) => ({
+      time: last.time + stepSec * (index + 1),
+    }));
+  }, [getTfStepSec]);
+
+  const syncFutureScaleSeries = useCallback((candles) => {
+    if (!futureScaleSeriesRef.current) return;
+    futureScaleSeriesRef.current.setData(buildFutureScaleData(candles));
+  }, [buildFutureScaleData]);
+
+  const getApproxBarSpacing = useCallback(() => {
+    if (!chartRef.current) return 8;
+    const candles = allCandlesRef.current;
+    for (let i = candles.length - 1; i > 0; i--) {
+      const prevX = chartRef.current.timeScale().timeToCoordinate(candles[i - 1].time);
+      const curX = chartRef.current.timeScale().timeToCoordinate(candles[i].time);
+      if (Number.isFinite(prevX) && Number.isFinite(curX) && curX !== prevX) {
+        return Math.abs(curX - prevX);
+      }
+    }
+    return 8;
+  }, []);
+
+  const coordinateToChartTime = useCallback((x) => {
+    if (!chartRef.current) return null;
+    const candles = allCandlesRef.current;
+    if (!candles.length) return null;
+    const stepSec = getTfStepSec();
+    const spacing = getApproxBarSpacing();
+    const first = candles[0];
+    const last = candles[candles.length - 1];
+    const firstX = chartRef.current.timeScale().timeToCoordinate(first.time);
+    const lastX = chartRef.current.timeScale().timeToCoordinate(last.time);
+
+    if (Number.isFinite(lastX) && x > lastX) {
+      const barsAhead = (x - lastX) / spacing;
+      return last.time + barsAhead * stepSec;
+    }
+    if (Number.isFinite(firstX) && x < firstX) {
+      const barsBack = (firstX - x) / spacing;
+      return first.time - barsBack * stepSec;
+    }
+    const direct = chartRef.current.timeScale().coordinateToTime(x);
+    const numeric = Number(direct);
+    if (Number.isFinite(numeric)) return numeric;
+    return last.time;
+  }, [getApproxBarSpacing, getTfStepSec]);
+
+  const timeToChartCoordinate = useCallback((time) => {
+    if (!chartRef.current) return null;
+    const candles = allCandlesRef.current;
+    if (!candles.length) return null;
+    const stepSec = getTfStepSec();
+    const spacing = getApproxBarSpacing();
+    const first = candles[0];
+    const last = candles[candles.length - 1];
+    const firstX = chartRef.current.timeScale().timeToCoordinate(first.time);
+    const lastX = chartRef.current.timeScale().timeToCoordinate(last.time);
+
+    if (Number.isFinite(lastX) && time > last.time) {
+      return lastX + ((time - last.time) / stepSec) * spacing;
+    }
+    if (Number.isFinite(firstX) && time < first.time) {
+      return firstX - ((first.time - time) / stepSec) * spacing;
+    }
+    const direct = chartRef.current.timeScale().timeToCoordinate(time);
+    if (Number.isFinite(direct)) return direct;
+    return null;
+  }, [getApproxBarSpacing, getTfStepSec]);
+
+  const eventToPoint = useCallback((evt, snap = magnetMode, toolType = activeTool) => {
+    if (!overlayRef.current || !chartRef.current || !candleSeriesRef.current) return null;
+    const rect = overlayRef.current.getBoundingClientRect();
+    const rawX = evt.clientX - rect.left;
+    const rawY = evt.clientY - rect.top;
+    let x = rawX;
+    let y = rawY;
+    let time = coordinateToChartTime(rawX);
+    let price = candleSeriesRef.current.coordinateToPrice(rawY);
+    const nearest = getNearestCandleByX(rawX);
+    let snapped = false;
+    if (snap && nearest) {
+      const isSinglePointHorizontalTool = toolType === 'hline' || toolType === 'alert' || toolType === 'ray';
+      const xThreshold = isSinglePointHorizontalTool ? MAGNET_THRESHOLD_PX * 1.75 : MAGNET_THRESHOLD_PX;
+      const yThreshold = isSinglePointHorizontalTool ? MAGNET_THRESHOLD_PX * 1.4 : MAGNET_THRESHOLD_PX;
+      const candleX = chartRef.current.timeScale().timeToCoordinate(nearest.time);
+      if (Number.isFinite(candleX)) {
+        const levels = [nearest.open, nearest.high, nearest.low, nearest.close]
+          .map((value) => {
+            const py = candleSeriesRef.current.priceToCoordinate(value);
+            if (!Number.isFinite(py)) return null;
+            return {
+              value,
+              x: candleX,
+              y: py,
+              distX: Math.abs(candleX - rawX),
+              distY: Math.abs(py - rawY),
+            };
+          })
+          .filter(Boolean)
+          .sort((a, b) => (a.distX + a.distY) - (b.distX + b.distY));
+        const best = levels[0];
+        if (best && best.distX <= xThreshold && best.distY <= yThreshold) {
+          snapped = true;
+          x = best.x;
+          y = best.y;
+          time = nearest.time;
+          price = best.value;
+        }
+      }
+    }
+    const numericTime = Number(time);
+    if (!Number.isFinite(numericTime) && nearest) time = nearest.time;
+    else time = numericTime;
+    if (!Number.isFinite(price)) price = nearest?.close;
+    if (!Number.isFinite(time) || !Number.isFinite(price)) return null;
+    return { time, price: roundPriceValue(price), x, y, snapped };
+  }, [activeTool, coordinateToChartTime, getNearestCandleByX, magnetMode]);
+
+  const projectPoint = useCallback((point) => {
+    if (!chartRef.current || !candleSeriesRef.current || !point) return null;
+    const x = timeToChartCoordinate(point.time);
+    const y = candleSeriesRef.current.priceToCoordinate(point.price);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y };
+  }, [timeToChartCoordinate]);
+
+  const getDrawingRenderData = useCallback((drawing) => {
+    const width = overlayRef.current?.clientWidth || chartContainerRef.current?.clientWidth || 0;
+    const height = overlayRef.current?.clientHeight || chartContainerRef.current?.clientHeight || 0;
+    if (!width || !height) return null;
+    const lastCandle = allCandlesRef.current[allCandlesRef.current.length - 1];
+    const nextBarX = lastCandle ? timeToChartCoordinate(lastCandle.time + getTfStepSec()) : null;
+    if (drawing.type === 'ray') {
+      const p = projectPoint(drawing.points?.[0]);
+      if (!p) return null;
+      const priceLabelX = clamp(p.x + 10, 10, width - 92);
+      const isLowerZone = p.y > height * 0.6;
+      const priceLabelY = clamp(isLowerZone ? p.y + 18 : p.y - 8, 14, height - 10);
+      return {
+        type: drawing.type,
+        line: [{ x: p.x, y: p.y }, { x: width, y: p.y }],
+        handles: [{ key: 'p0', x: p.x, y: p.y }],
+        labelAt: { x: p.x + 8, y: p.y - 8 },
+        priceLabelAt: { x: priceLabelX, y: priceLabelY },
+      };
+    }
+    if (drawing.type === 'hline' || drawing.type === 'alert') {
+      const y = candleSeriesRef.current?.priceToCoordinate?.(drawing.price);
+      if (!Number.isFinite(y)) return null;
+      const handleX = drawing.type === 'hline'
+        ? clamp(Number.isFinite(nextBarX) ? nextBarX + 18 : width - 64, 22, width - 56)
+        : width - 36;
+      return { type: drawing.type, line: [{ x: 0, y }, { x: width, y }], handles: [{ key: 'price', x: handleX, y }], labelAt: { x: 12, y: y - 8 } };
+    }
+    if (drawing.type === 'text') {
+      const p = projectPoint(drawing.points?.[0]);
+      if (!p) return null;
+      return { type: drawing.type, point: p, handles: [{ key: 'p0', x: p.x, y: p.y }], labelAt: { x: p.x + 8, y: p.y - 8 } };
+    }
+    if (!Array.isArray(drawing.points) || drawing.points.length < 2) return null;
+    const p1 = projectPoint(drawing.points[0]);
+    const p2 = projectPoint(drawing.points[1]);
+    if (!p1 || !p2) return null;
+    if (drawing.type === 'rect') {
+      const x = Math.min(p1.x, p2.x);
+      const y = Math.min(p1.y, p2.y);
+      const w = Math.abs(p2.x - p1.x);
+      const h = Math.abs(p2.y - p1.y);
+      return { type: drawing.type, rect: { x, y, w, h }, handles: [{ key: 'p0', x: p1.x, y: p1.y }, { key: 'p1', x: p2.x, y: p2.y }], labelAt: { x: x + 6, y: y - 8 } };
+    }
+    const extendLeft = drawing.extendLeft || false;
+    const extendRight = drawing.extendRight || false;
+    const [a, b] = extendSegmentToBounds(p1, p2, width, extendLeft, extendRight);
+    return {
+      type: drawing.type,
+      line: [a, b],
+      handles: [{ key: 'p0', x: p1.x, y: p1.y }, { key: 'p1', x: p2.x, y: p2.y }],
+      arrowHead: drawing.type === 'arrow' ? getArrowHeadPoints(a, b) : null,
+      labelAt: { x: (p1.x + p2.x) / 2 + 8, y: (p1.y + p2.y) / 2 - 8 },
+    };
+  }, [getTfStepSec, projectPoint, timeToChartCoordinate]);
+
+  const findHitTarget = useCallback((x, y) => {
+    for (let i = drawings.length - 1; i >= 0; i--) {
+      const drawing = drawings[i];
+      const data = getDrawingRenderData(drawing);
+      if (!data) continue;
+      for (const handle of data.handles || []) {
+        if (Math.hypot(handle.x - x, handle.y - y) <= 8) {
+          return { drawing, mode: 'handle', handle: handle.key };
+        }
+      }
+      if ((drawing.type === 'hline' || drawing.type === 'alert') && data.line) {
+        if (Math.abs(data.line[0].y - y) <= 6) return { drawing, mode: 'move' };
+      } else if (drawing.type === 'text' && data.point) {
+        if (Math.hypot(data.point.x - x, data.point.y - y) <= 14) return { drawing, mode: 'move' };
+      } else if (drawing.type === 'rect' && data.rect) {
+        const inside = x >= data.rect.x - 4 && x <= data.rect.x + data.rect.w + 4 && y >= data.rect.y - 4 && y <= data.rect.y + data.rect.h + 4;
+        if (inside) return { drawing, mode: 'move' };
+      } else if (data.line) {
+        const [a, b] = data.line;
+        if (pointToSegmentDistance(x, y, a.x, a.y, b.x, b.y) <= 6) return { drawing, mode: 'move' };
+      }
+    }
+    return null;
+  }, [drawings, getDrawingRenderData]);
+
+  const moveDrawingByDelta = useCallback((drawing, deltaTime, deltaPrice) => {
+    if (drawing.type === 'hline' || drawing.type === 'alert') {
+      return { ...drawing, price: roundPriceValue(drawing.price + deltaPrice), triggeredAt: null };
+    }
+    if (drawing.type === 'text') {
+      return {
+        ...drawing,
+        points: drawing.points.map((point) => ({ time: point.time + deltaTime, price: roundPriceValue(point.price + deltaPrice) })),
+      };
+    }
+    return {
+      ...drawing,
+      points: drawing.points.map((point) => ({ time: point.time + deltaTime, price: roundPriceValue(point.price + deltaPrice) })),
+      triggeredAt: drawing.type === 'alert' ? null : drawing.triggeredAt,
+    };
+  }, []);
+
+  const updateDrawingHandle = useCallback((drawing, handle, point) => {
+    if (drawing.type === 'hline' || drawing.type === 'alert') return { ...drawing, price: roundPriceValue(point.price), triggeredAt: null };
+    if (drawing.type === 'text') return { ...drawing, points: [{ time: point.time, price: roundPriceValue(point.price) }] };
+    const nextPoints = drawing.points.map((item, index) => {
+      if ((handle === 'p0' && index === 0) || (handle === 'p1' && index === 1)) {
+        return { time: point.time, price: roundPriceValue(point.price) };
+      }
+      return item;
+    });
+    return { ...drawing, points: nextPoints, triggeredAt: drawing.type === 'alert' ? null : drawing.triggeredAt };
+  }, []);
+
+  const clearChartDrawings = useCallback(() => {
+    if (!drawings.length) return;
+    commitDrawings([]);
+    setSelectedDrawingIds([]);
+    setDraftDrawing(null);
+  }, [commitDrawings, drawings.length]);
+
+  const setSelectedLabel = useCallback(() => {
+    const selectedDrawingId = selectedDrawingIds[selectedDrawingIds.length - 1];
+    const drawing = drawings.find((item) => item.id === selectedDrawingId);
+    if (!drawing) return;
+    const current = drawing.type === 'text' ? drawing.text || '' : drawing.label || '';
+    const next = window.prompt('Введите подпись', current);
+    if (next === null) return;
+    commitDrawings((prev) => prev.map((item) => {
+      if (item.id !== selectedDrawingId) return item;
+      return item.type === 'text' ? { ...item, text: next } : { ...item, label: next };
+    }));
+  }, [commitDrawings, drawings, selectedDrawingIds]);
+
+  const toggleSelectedExtend = useCallback((side) => {
+    const selectedDrawingId = selectedDrawingIds[selectedDrawingIds.length - 1];
+    commitDrawings((prev) => prev.map((item) => {
+      if (item.id !== selectedDrawingId || !isLineTool(item.type) || item.type === 'arrow') return item;
+      const key = side === 'left' ? 'extendLeft' : 'extendRight';
+      return { ...item, [key]: !item[key] };
+    }));
+  }, [commitDrawings, selectedDrawingIds]);
+
+  const checkAlertTriggers = useCallback((candle) => {
+    if (!canDraw || !onAlertTriggered || !candle) return;
+    setDrawings((prev) => {
+      let changed = false;
+      const next = prev.map((drawing) => {
+        if (drawing.type !== 'alert' || drawing.triggeredAt) return drawing;
+        if (candle.low <= drawing.price && candle.high >= drawing.price) {
+          changed = true;
+          const triggeredAt = Date.now();
+          onAlertTriggered({
+            id: makeId('alert'),
+            drawingId: drawing.id,
+            symbol,
+            tf: localTfRef.current,
+            price: roundPriceValue(drawing.price),
+            label: drawing.label || '',
+            triggeredAt,
+          });
+          return { ...drawing, triggeredAt };
+        }
+        return drawing;
+      });
+      return changed ? next : prev;
+    });
+  }, [canDraw, commitDrawings, onAlertTriggered, symbol]);
 
   useEffect(() => { btcMapRef.current = btcMap; }, [btcMap]);
   useEffect(() => { setLocalTf(globalTf); }, [globalTf]);
@@ -280,10 +753,42 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
         width:  isFullscreenMode ? window.innerWidth : chartContainerRef.current.clientWidth,
         height: isFullscreenMode ? window.innerHeight - CHART_HEADER_H - OHLCV_BAR_H : CHEIGHT - OHLCV_BAR_H,
       });
+      requestOverlayRefresh(160);
     };
     window.addEventListener('resize', h);
     return () => window.removeEventListener('resize', h);
-  }, [isFullscreenMode, CHEIGHT, useAutoSize]);
+  }, [isFullscreenMode, CHEIGHT, requestOverlayRefresh, useAutoSize]);
+
+  useEffect(() => {
+    if (!chartContainerRef.current) return;
+    const container = chartContainerRef.current;
+    const keepOverlayInSync = (durationMs) => requestOverlayRefresh(durationMs);
+    const handleWheel = () => keepOverlayInSync(220);
+    const handleMouseDown = () => keepOverlayInSync(900);
+    const handleMouseMove = (event) => {
+      if (event.buttons) keepOverlayInSync(90);
+    };
+    const handleMouseUp = () => keepOverlayInSync(120);
+
+    container.addEventListener('wheel', handleWheel, { passive: true });
+    container.addEventListener('mousedown', handleMouseDown);
+    container.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    let resizeObserver = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => keepOverlayInSync(120));
+      resizeObserver.observe(container);
+    }
+
+    return () => {
+      container.removeEventListener('wheel', handleWheel);
+      container.removeEventListener('mousedown', handleMouseDown);
+      container.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      resizeObserver?.disconnect();
+    };
+  }, [requestOverlayRefresh]);
 
   useEffect(() => {
     if (!isFullscreenMode) return;
@@ -291,6 +796,19 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [isFullscreenMode, onClose]);
+
+  useEffect(() => {
+    const h = (e) => {
+      if (e.key !== 'Delete' || !selectedDrawingIds.length) return;
+      const tag = e.target?.tagName;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return;
+      const selectedSet = new Set(selectedDrawingIds);
+      commitDrawings((prev) => prev.filter((item) => !selectedSet.has(item.id)));
+      setSelectedDrawingIds([]);
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [commitDrawings, selectedDrawingIds]);
 
   // ── Создаём chart ОДИН РАЗ ──────────────────────────────────────────────────
   useEffect(() => {
@@ -304,6 +822,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
       layout: { background:{type:LightweightCharts.ColorType.Solid,color:'#0d0d0f'}, textColor:'#a1a1aa' },
       grid:   { vertLines:{visible:false}, horzLines:{visible:false} },
       crosshair: { mode:LightweightCharts.CrosshairMode.Normal },
+      handleScroll: { pressedMouseMove: true, mouseWheel: true, horzTouchDrag: true, vertTouchDrag: true },
       rightPriceScale: { borderVisible:false, autoScale:true, minimumWidth:80 },
       timeScale: { borderVisible:false, rightOffset:60, barSpacing:3, minBarSpacing:0, timeVisible:true, secondsVisible:false, tickMarkFormatter:timescaleFormatter },
       ...(useAutoSize ? { autoSize:true } : { width:w, height:h }),
@@ -311,14 +830,23 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
 
     const candleSeries = chart.addCandlestickSeries({ upColor:'#00ff9d', downColor:'#ff3b3b', borderVisible:false, wickUpColor:'#00ff9d', wickDownColor:'#ff3b3b' });
     const volumeSeries = chart.addHistogramSeries({ color:'#26a69a', priceFormat:{type:'volume'}, priceScaleId:'' });
+    const futureScaleSeries = chart.addLineSeries({
+      color: 'rgba(0,0,0,0)',
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
     chart.priceScale('').applyOptions({ scaleMargins:{top:0.8,bottom:0} });
 
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
+    futureScaleSeriesRef.current = futureScaleSeries;
     chartRef.current        = chart;
 
     chart.subscribeCrosshairMove((param) => {
       if (cancelled) return;
+      requestOverlayRefresh(48);
       if (!param.time||!param.seriesData) {
         isHoveringRef.current = false;
         const last = allCandlesRef.current[allCandlesRef.current.length - 1];
@@ -336,6 +864,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
 
     // Lazy loading при скролле влево
     chart.timeScale().subscribeVisibleLogicalRangeChange(async (range) => {
+      requestOverlayRefresh(160);
       if (cancelled || !range || isLoadingMoreRef.current || !hasMoreRef.current) return;
       if (range.from > 100) return;
       const first = allCandlesRef.current[0];
@@ -354,6 +883,8 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
           if (candleSeriesRef.current && !cancelled) {
             candleSeriesRef.current.setData(merged);
             volumeSeriesRef.current.setData(merged.map(d => ({ time:d.time, value:d.volume, color:d.close>=d.open?'rgba(0,255,157,0.5)':'rgba(255,59,59,0.5)' })));
+            syncFutureScaleSeries(merged);
+            requestOverlayRefresh(180);
           }
           if (older.length < 100) hasMoreRef.current = false;
         }
@@ -366,12 +897,13 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
       cancelled = true;
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
+      futureScaleSeriesRef.current = null;
       chartRef.current        = null;
       allCandlesRef.current   = [];
       isHoveringRef.current   = false;
       try { chart.remove(); } catch {}
     };
-  }, [symbol, isFullscreenMode, CHEIGHT, useAutoSize]); // eslint-disable-line
+  }, [symbol, isFullscreenMode, CHEIGHT, requestOverlayRefresh, useAutoSize]); // eslint-disable-line
 
   // ── Загружаем данные при смене TF (без пересоздания графика) ───────────────
   useEffect(() => {
@@ -385,6 +917,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
       allCandlesRef.current    = [];
       hasMoreRef.current       = true;
       isLoadingMoreRef.current = false;
+      futureScaleSeriesRef.current?.setData([]);
       setLoading(true);
       setLoadingMore(false);
 
@@ -397,12 +930,15 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
           const lastPrice = prepared[prepared.length-1].close;
           candleSeriesRef.current.applyOptions({ priceFormat:{type:'price',...getPriceFormat(lastPrice)} });
           volumeSeriesRef.current.setData(prepared.map(d => ({ time:d.time, value:d.volume, color:d.close>=d.open?'rgba(0,255,157,0.5)':'rgba(255,59,59,0.5)' })));
+          syncFutureScaleSeries(prepared);
           chartRef.current.timeScale().scrollToRealTime();
+          requestOverlayRefresh(180);
           if (!precomputedStats) {
             const tfMin = TF_MIN[localTf]||5;
             const s = computeStats(prepared, btcMapRef.current, filters, tfMin, symbol);
             if (!cancelled && s) setStats(s);
           }
+          if (!cancelled) checkAlertTriggers(prepared[prepared.length - 1]);
           if (!cancelled) setCrosshair(prepared[prepared.length - 1]);
         }
         if (!cancelled) setLoading(false);
@@ -415,6 +951,9 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
           else if (!arr.length || nextCandle.time > arr[arr.length-1].time) arr.push(nextCandle);
           candleSeriesRef.current.update(nextCandle);
           volumeSeriesRef.current.update({ time:nextCandle.time, value:nextCandle.volume, color:nextCandle.close>=nextCandle.open?'rgba(0,255,157,0.5)':'rgba(255,59,59,0.5)' });
+          syncFutureScaleSeries(arr);
+          requestOverlayRefresh(80);
+          checkAlertTriggers(nextCandle);
           if (!isHoveringRef.current) setCrosshair(nextCandle);
         });
       });
@@ -428,7 +967,7 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
       clearTimeout(timer);
       if (wsHandle) wsHandle.close();
     };
-  }, [localTf, symbol]); // eslint-disable-line
+  }, [localTf, requestOverlayRefresh, symbol, syncFutureScaleSeries]); // eslint-disable-line
 
   // Пересчёт stats при изменении периодов фильтров
   useEffect(() => {
@@ -439,6 +978,203 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
     const s = computeStats(cached, btcMapRef.current, filters, tfMin, symbol);
     if (s) setStats(s);
   }, [filters.natrPeriod, filters.volatPeriod, filters.corrPeriod, filters.minNatr, filters.maxNatr, filters.minVolat, filters.maxVolat, filters.minCorr, filters.maxCorr]); // eslint-disable-line
+
+  const selectedDrawing = useMemo(() => {
+    const selectedDrawingId = selectedDrawingIds[selectedDrawingIds.length - 1];
+    return drawings.find((item) => item.id === selectedDrawingId) || null;
+  }, [drawings, selectedDrawingIds]);
+  const selectedDrawingRender = useMemo(
+    () => selectedDrawing ? getDrawingRenderData(selectedDrawing) : null,
+    [selectedDrawing, getDrawingRenderData]
+  );
+
+  const buildLabeledDrawing = useCallback((type, point) => {
+    const base = {
+      id: makeId(type),
+      type,
+      label: '',
+      color: type === 'alert' ? '#ff7a7a' : type === 'rect' ? '#ffb84d' : '#57c7ff',
+    };
+    if (type === 'text') {
+      const text = window.prompt('Текстовая метка', '') || 'Текст';
+      return { ...base, text, points: [{ time: point.time, price: point.price }] };
+    }
+    if (type === 'hline') {
+      return { ...base, price: point.price };
+    }
+    if (type === 'alert') {
+      return { ...base, price: point.price, label: '', triggeredAt: null };
+    }
+    if (type === 'ray') {
+      return { ...base, points: [{ time: point.time, price: point.price }] };
+    }
+    return { ...base, points: [{ time: point.time, price: point.price }, { time: point.time, price: point.price }], extendLeft: false, extendRight: false };
+  }, []);
+
+  const handleOverlayMouseDown = useCallback((e) => {
+    if (!canDraw || e.button !== 0) return;
+    if (e.target?.closest?.('.drawing-toolbar') || e.target?.closest?.('.drawing-line-actions') || e.target?.closest?.('.drawing-label-actions')) return;
+    const point = eventToPoint(e, magnetMode && activeTool !== 'select', activeTool);
+    if (!point) return;
+
+    if (activeTool === 'select') {
+      const hit = findHitTarget(point.x, point.y);
+      if (!hit) {
+        setSelectedDrawingIds([]);
+        setDragState(null);
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      setSelectedDrawingIds([hit.drawing.id]);
+      setDragState({
+        mode: hit.mode,
+        drawingId: hit.drawing.id,
+        handle: hit.handle || null,
+        startPoint: point,
+        origin: JSON.parse(JSON.stringify(hit.drawing)),
+      });
+      return;
+    }
+
+    if (activeTool === 'text' || activeTool === 'hline' || activeTool === 'alert' || activeTool === 'ray') {
+      e.preventDefault();
+      e.stopPropagation();
+      const drawing = buildLabeledDrawing(activeTool, point);
+      commitDrawings((prev) => [...prev, drawing]);
+      setSelectedDrawingIds([drawing.id]);
+      setActiveTool('select');
+      return;
+    }
+
+    if (!draftDrawing) {
+      e.preventDefault();
+      e.stopPropagation();
+      const drawing = buildLabeledDrawing(activeTool, point);
+      setDraftDrawing(drawing);
+      setSelectedDrawingIds([]);
+      return;
+    }
+
+    const finalPoint = (e.shiftKey && (activeTool === 'trend' || activeTool === 'arrow'))
+      ? { ...point, price: draftDrawing.points[0].price }
+      : point;
+    e.preventDefault();
+    e.stopPropagation();
+    const completed = {
+      ...draftDrawing,
+      points: [draftDrawing.points[0], { time: finalPoint.time, price: finalPoint.price }],
+    };
+    commitDrawings((prev) => [...prev, completed]);
+    setSelectedDrawingIds([completed.id]);
+    setDraftDrawing(null);
+    setActiveTool('select');
+  }, [activeTool, buildLabeledDrawing, canDraw, commitDrawings, draftDrawing, eventToPoint, findHitTarget]);
+
+  const handleOverlayMouseMove = useCallback((e) => {
+    if (e.target?.closest?.('.drawing-toolbar') || e.target?.closest?.('.drawing-line-actions') || e.target?.closest?.('.drawing-label-actions')) return;
+    const dragToolType = dragState?.origin?.type || draftDrawing?.type || activeTool;
+    const shouldSnap =
+      canDraw &&
+      magnetMode &&
+      (
+        (activeTool !== 'select' && !dragState) ||
+        dragState?.mode === 'handle'
+      );
+    const point = eventToPoint(e, shouldSnap, dragToolType);
+    if (!point) return;
+    setCursorGuide(point);
+    if (!canDraw) return;
+    if (draftDrawing) {
+      const nextPoint = (e.shiftKey && (draftDrawing.type === 'trend' || draftDrawing.type === 'arrow'))
+        ? { ...point, price: draftDrawing.points[0].price }
+        : point;
+      setDraftDrawing((prev) => prev ? { ...prev, points: [prev.points[0], { time: nextPoint.time, price: nextPoint.price }] } : prev);
+      return;
+    }
+    if (!dragState) return;
+    updateDrawingsState((prev) => prev.map((item) => {
+      if (item.id !== dragState.drawingId) return item;
+      if (dragState.mode === 'handle') {
+        let nextPoint = point;
+        if (e.shiftKey && (dragState.origin.type === 'trend' || dragState.origin.type === 'arrow')) {
+          const otherPoint = dragState.handle === 'p0' ? dragState.origin.points?.[1] : dragState.origin.points?.[0];
+          if (otherPoint) nextPoint = { ...point, price: otherPoint.price };
+        }
+        return updateDrawingHandle(dragState.origin, dragState.handle, nextPoint);
+      }
+      const deltaTime = point.time - dragState.startPoint.time;
+      const deltaPrice = point.price - dragState.startPoint.price;
+      return moveDrawingByDelta(dragState.origin, deltaTime, deltaPrice);
+    }));
+  }, [activeTool, canDraw, dragState, draftDrawing, eventToPoint, moveDrawingByDelta, updateDrawingsState, updateDrawingHandle]);
+
+  const handleOverlayMouseUp = useCallback(() => {
+    if (dragState) {
+      persistCurrentDrawings(drawingsRef.current);
+      setDragState(null);
+    }
+  }, [dragState, persistCurrentDrawings]);
+
+  const handleStageMouseLeave = useCallback(() => {
+    setCursorGuide(null);
+  }, []);
+
+  useEffect(() => {
+    if (!dragState) return;
+    const onMove = (event) => handleOverlayMouseMove(event);
+    const onUp = () => handleOverlayMouseUp();
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [dragState, handleOverlayMouseMove, handleOverlayMouseUp]);
+
+  const renderDrawingElement = useCallback((drawing, isDraft = false) => {
+    const data = getDrawingRenderData(drawing);
+    if (!data) return null;
+    const color = drawing.color || (drawing.type === 'alert' ? '#ff7a7a' : drawing.type === 'rect' ? '#ffb84d' : '#57c7ff');
+    const isSelected = selectedDrawingIds.includes(drawing.id) && !isDraft;
+    const stroke = drawing.type === 'alert' && drawing.triggeredAt ? '#ffd166' : color;
+    const labelText = drawing.type === 'text' ? drawing.text : drawing.label;
+    const elements = [];
+
+    if (drawing.type === 'rect' && data.rect) {
+      elements.push(<rect key={`${drawing.id}_rect`} x={data.rect.x} y={data.rect.y} width={data.rect.w} height={data.rect.h} fill="rgba(255,184,77,0.10)" stroke={stroke} strokeWidth={isSelected ? 1.6 : 1} strokeDasharray={isDraft ? '6 4' : undefined} />);
+    } else if ((drawing.type === 'hline' || drawing.type === 'alert') && data.line) {
+      elements.push(<line key={`${drawing.id}_line`} x1={data.line[0].x} y1={data.line[0].y} x2={data.line[1].x} y2={data.line[1].y} stroke={stroke} strokeWidth={isSelected ? 1.5 : 0.9} strokeDasharray={drawing.type === 'alert' ? '6 4' : (isDraft ? '6 4' : undefined)} />);
+    } else if (data.line) {
+      elements.push(<line key={`${drawing.id}_line`} x1={data.line[0].x} y1={data.line[0].y} x2={data.line[1].x} y2={data.line[1].y} stroke={stroke} strokeWidth={isSelected ? 1.5 : 0.95} strokeDasharray={isDraft ? '6 4' : undefined} />);
+      if (data.arrowHead) {
+        const points = data.arrowHead.map((point) => `${point.x},${point.y}`).join(' ');
+        elements.push(<polyline key={`${drawing.id}_arrow`} points={points} fill="none" stroke={stroke} strokeWidth={isSelected ? 1.5 : 0.95} />);
+      }
+    }
+
+    if (drawing.type === 'text' && data.point) {
+      elements.push(<text key={`${drawing.id}_text`} x={data.point.x + 8} y={data.point.y - 8} fill={stroke} fontSize="12">{drawing.text || 'Текст'}</text>);
+    } else if (labelText && data.labelAt) {
+      elements.push(<text key={`${drawing.id}_label`} x={data.labelAt.x} y={data.labelAt.y} fill={stroke} fontSize="11">{labelText}</text>);
+    }
+    if (drawing.type === 'ray' && data.priceLabelAt) {
+      const priceValue = drawing.points?.[0]?.price;
+      const priceText = Number.isFinite(priceValue)
+        ? trimTrailingZeros(Number(priceValue).toFixed(Math.min(getPriceFormat(priceValue).precision + 2, 8)))
+        : '';
+      if (priceText) {
+        elements.push(<text key={`${drawing.id}_price`} x={data.priceLabelAt.x} y={data.priceLabelAt.y} fill={stroke} fontSize="11">{priceText}</text>);
+      }
+    }
+
+    if (isSelected && !isDraft) {
+      for (const handle of data.handles || []) {
+        elements.push(<circle key={`${drawing.id}_${handle.key}`} cx={handle.x} cy={handle.y} r="3.5" fill="#0d0d0f" stroke="#ffffff" strokeWidth="1" />);
+      }
+    }
+    return <g key={drawing.id}>{elements}</g>;
+  }, [getDrawingRenderData, selectedDrawingIds]);
 
   const fmtPrice = (v) => v.toFixed(Math.min(getPriceFormat(v).precision+2, 8));
   const fmtVol   = (v) => v>=1e6?(v/1e6).toFixed(2)+'M':v>=1e3?(v/1e3).toFixed(1)+'K':v.toFixed(0);
@@ -472,7 +1208,66 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
           <span className="ohlcv-label">Объём</span><span className="ohlcv-val ohlcv-vol">{fmtVol(crosshair.volume)}</span>
         </>}
       </div>
-      <div className="chart-relative-container" style={ useAutoSize ? {flex:1,minHeight:0} : { height: isFullscreenMode ? `calc(100vh - ${CHART_HEADER_H + OHLCV_BAR_H}px)` : `${CHEIGHT - OHLCV_BAR_H}px` } }>
+      <div
+        className={`chart-relative-container ${canDraw ? 'chart-drawing-enabled' : ''}`}
+        style={ useAutoSize ? {flex:1,minHeight:0} : { height: isFullscreenMode ? `calc(100vh - ${CHART_HEADER_H + OHLCV_BAR_H}px)` : `${CHEIGHT - OHLCV_BAR_H}px` } }
+        onMouseDownCapture={canDraw ? handleOverlayMouseDown : undefined}
+        onMouseMove={canDraw ? handleOverlayMouseMove : undefined}
+        onMouseLeave={canDraw ? handleStageMouseLeave : undefined}
+      >
+        {canDraw && (
+          <div className="drawing-toolbar">
+            {[
+              ['select', '⌖', 'Курсор'],
+              ['trend', '╱', 'Линия тренда'],
+              ['ray', '⟶', 'Горизонтальный луч'],
+              ['hline', '—', 'Горизонтальный уровень'],
+              ['rect', '▭', 'Прямоугольник / зона'],
+              ['arrow', '➜', 'Стрелка'],
+              ['text', 'T', 'Текст'],
+              ['alert', '🔔', 'Алерт'],
+            ].map(([key, icon, label]) => (
+              <button key={key} className={`drawing-btn ${activeTool===key?'active':''}`} onClick={() => { setActiveTool(key); setDraftDrawing(null); }} title={label}>{icon}</button>
+            ))}
+            <button className={`drawing-btn ${magnetMode?'active':''}`} onClick={() => setMagnetMode(v => !v)} title="Магнит">∩</button>
+            {selectedDrawing && (
+              <>
+                <button className="drawing-btn" onClick={setSelectedLabel} title="Подпись">✎</button>
+                {selectedDrawing.type === 'trend' && (
+                  <>
+                    <button className={`drawing-btn ${selectedDrawing.extendLeft?'active':''}`} onClick={() => toggleSelectedExtend('left')} title="Продлить влево">←</button>
+                    <button className={`drawing-btn ${selectedDrawing.extendRight?'active':''}`} onClick={() => toggleSelectedExtend('right')} title="Продлить вправо">→</button>
+                  </>
+                )}
+                <button className="drawing-btn danger" onClick={() => setDrawings((prev) => prev.filter((item) => item.id !== selectedDrawing.id))} title="Удалить">⌫</button>
+              </>
+            )}
+            <button className="drawing-btn danger" onClick={clearChartDrawings} title="Очистить график">🗑</button>
+          </div>
+        )}
+        {canDraw && selectedDrawing?.type === 'trend' && selectedDrawingRender?.labelAt && (
+          <div
+            className="drawing-line-actions"
+            style={{
+              left: `${Math.max(72, selectedDrawingRender.labelAt.x - (selectedDrawing?.type === 'trend' ? 56 : 18))}px`,
+              top: `${Math.max(12, selectedDrawingRender.labelAt.y - 42)}px`,
+            }}
+          >
+            <button className={`drawing-btn ${selectedDrawing.extendLeft?'active':''}`} onClick={() => toggleSelectedExtend('left')} title="Продлить влево">←</button>
+            <button className={`drawing-btn ${selectedDrawing.extendRight?'active':''}`} onClick={() => toggleSelectedExtend('right')} title="Продлить вправо">→</button>
+          </div>
+        )}
+        {canDraw && selectedDrawingRender?.labelAt && (
+          <div
+            className="drawing-label-actions"
+            style={{
+              left: `${Math.max(72, selectedDrawingRender.labelAt.x - 18)}px`,
+              top: `${Math.max(12, selectedDrawingRender.labelAt.y - (selectedDrawing?.type === 'trend' ? 82 : 42))}px`,
+            }}
+          >
+            <button className="drawing-btn" onClick={setSelectedLabel} title="Подпись">✎</button>
+          </div>
+        )}
         {loading && <div className="chart-loader"><div className="scanner-line"></div><div className="loader-info"><div className="loader-ticker">{symbol.replace(/[-_]?USDT.*/i,'')}</div><div className="loader-status">DECODING DATA...</div></div></div>}
         {loadingMore && !loading && (
           <div style={{position:'absolute',top:8,left:'50%',transform:'translateX(-50%)',zIndex:20,background:'rgba(0,0,0,0.7)',color:'#00ff9d',fontSize:11,padding:'3px 10px',borderRadius:4,pointerEvents:'none'}}>
@@ -480,6 +1275,21 @@ const ChartComponent = ({ symbol, marketStats, globalTf, filters, btcMap, isFull
           </div>
         )}
         <div className={`chart-anchor ${loading?'blurred':''}`} ref={chartContainerRef} />
+        {(canDraw || drawings.length > 0) && (
+          <svg
+            ref={overlayRef}
+            className={`drawing-overlay ${canDraw && activeTool!=='select'?'drawing-overlay-draw':''}`}
+          >
+            {canDraw && cursorGuide && (
+              <g className="drawing-guide">
+                <line x1={cursorGuide.x} y1={0} x2={cursorGuide.x} y2="100%" />
+                <line x1={0} y1={cursorGuide.y} x2="100%" y2={cursorGuide.y} />
+              </g>
+            )}
+            {drawings.map((drawing) => renderDrawingElement(drawing))}
+            {draftDrawing && renderDrawingElement(draftDrawing, true)}
+          </svg>
+        )}
         <div className="info-overlay">
           <div>ОБЪЕМ <span className="stat-period">(24ч)</span>: <b>{(parseFloat(marketStats.quoteVolume)/1e6).toFixed(1)}M$</b></div>
           <div className={parseFloat(marketStats.priceChangePercent)>0?'green':'red'}>ИЗМ <span className="stat-period">(24ч)</span>: <b>{parseFloat(marketStats.priceChangePercent).toFixed(2)}%</b></div>
@@ -516,20 +1326,20 @@ const VirtualChartCard = (props) => {
   const fullscreenPortal = fullscreen ? ReactDOM.createPortal(
     <div style={{position:'fixed',top:0,left:0,width:'100vw',height:'100vh',zIndex:99999,background:'#0d0d0f',display:'flex',flexDirection:'column',overflow:'hidden'}}
       onClick={(e)=>{if(e.target===e.currentTarget)setFullscreen(false);}}>
-      <ChartComponent {...props} isFullscreenMode={true} onClose={handleClose} onFullscreen={null}/>
+      <ChartComponent {...props} isFullscreenMode={true} onClose={handleClose} onFullscreen={null} enableDrawingTools={true}/>
     </div>, document.body
   ) : null;
 
   return (<>
     <div ref={containerRef} className="chart-card-virtual">
-      {visible && <ChartComponent {...props} onFullscreen={handleFullscreen} isFullscreenMode={false}/>}
+      {visible && <ChartComponent {...props} onFullscreen={handleFullscreen} isFullscreenMode={false} enableDrawingTools={false}/>}
     </div>
     {fullscreenPortal}
   </>);
 };
 
 // ─── Список монет ─────────────────────────────────────────────────────────────
-const CoinList = ({ coins, watchlist, onToggleWatch, selectedStarColor, statsMap, globalTf, defaultSort, filters, btcMap }) => {
+const CoinList = ({ coins, watchlist, onToggleWatch, selectedStarColor, statsMap, globalTf, defaultSort, filters, btcMap, onAlertTriggered }) => {
   const containerRef = useRef(null);
   const [sortCol, setSortCol]         = useState(defaultSort || 'volume');
   const [sortDir, setSortDir]         = useState(-1);
@@ -601,8 +1411,9 @@ const CoinList = ({ coins, watchlist, onToggleWatch, selectedStarColor, statsMap
           <ChartComponent key={`${chartCoin.symbol}:${globalTf}`} symbol={chartCoin.symbol} marketStats={chartCoin}
             globalTf={globalTf} filters={filters} btcMap={btcMap}
             isFullscreenMode={false} onFullscreen={null}
-            precomputedStats={statsMap[chartCoin.symbol]||null} autoSize={true}
-            watchlist={watchlist} onToggleWatch={onToggleWatch} selectedStarColor={selectedStarColor}/>
+            precomputedStats={statsMap[chartCoin.symbol]||null} autoSize={true} enableDrawingTools={true}
+            watchlist={watchlist} onToggleWatch={onToggleWatch} selectedStarColor={selectedStarColor}
+            onAlertTriggered={onAlertTriggered}/>
         )}
       </div>
       <div className="list-table-panel">
@@ -695,8 +1506,13 @@ function App() {
   const [watchDropPos,  setWatchDropPos]           = useState({top:0,left:0});
   const [starColorOpen, setStarColorOpen]          = useState(false);
   const [starColorPos,  setStarColorPos]           = useState({top:0,left:0});
+  const [alertPanelOpen, setAlertPanelOpen]        = useState(false);
+  const [triggeredAlerts, setTriggeredAlerts]      = useState(() => readStorageJson(ALERT_HISTORY_STORAGE_KEY, []));
+  const [alertToasts, setAlertToasts]              = useState([]);
+  const [globalFullscreenChart, setGlobalFullscreenChart] = useState(null);
   const watchDropRef  = useRef(null);
   const starColorRef  = useRef(null);
+  const alertBellRef  = useRef(null);
   const dropdownRef   = useRef(null);
   const statsAbortRef = useRef({cancelled:false});
 
@@ -723,9 +1539,14 @@ function App() {
   useEffect(() => { try{localStorage.setItem('kopibar_tabs',JSON.stringify(tabs));}catch{} }, [tabs]);
   useEffect(() => { try{localStorage.setItem('kopibar_active_tab',String(activeTabId));}catch{} }, [activeTabId]);
   useEffect(() => { try{localStorage.setItem('kopibar_watchlist_v2',JSON.stringify(watchlist));}catch{} }, [watchlist]);
+  useEffect(() => { writeStorageJson(ALERT_HISTORY_STORAGE_KEY, triggeredAlerts); }, [triggeredAlerts]);
 
   useEffect(() => {
-    const h=(e)=>{ if(watchDropRef.current&&!watchDropRef.current.contains(e.target)) setWatchDropOpen(false); if(starColorRef.current&&!starColorRef.current.contains(e.target)) setStarColorOpen(false); };
+    const h=(e)=>{
+      if(watchDropRef.current&&!watchDropRef.current.contains(e.target)) setWatchDropOpen(false);
+      if(starColorRef.current&&!starColorRef.current.contains(e.target)) setStarColorOpen(false);
+      if(alertBellRef.current&&!alertBellRef.current.contains(e.target)) setAlertPanelOpen(false);
+    };
     document.addEventListener('mousedown',h); return ()=>document.removeEventListener('mousedown',h);
   }, []);
   useEffect(() => {
@@ -748,6 +1569,21 @@ function App() {
   }, [selectedStarColor]);
 
   const clearWatchlist = useCallback(() => { setConfirmClear(true); }, []);
+  const pushAlertToast = useCallback((alert) => {
+    const toast = { ...alert, toastId: makeId('toast') };
+    setAlertToasts((prev) => [toast, ...prev].slice(0, 4));
+    window.setTimeout(() => {
+      setAlertToasts((prev) => prev.filter((item) => item.toastId !== toast.toastId));
+    }, 8000);
+  }, []);
+  const handleAlertTriggered = useCallback((alert) => {
+    setTriggeredAlerts((prev) => [alert, ...prev.filter((item) => !(item.symbol === alert.symbol && item.tf === alert.tf && item.price === alert.price && item.triggeredAt === alert.triggeredAt))].slice(0, 80));
+    pushAlertToast(alert);
+  }, [pushAlertToast]);
+  const openAlertChart = useCallback((symbol, tf) => {
+    setGlobalFullscreenChart({ symbol, tf });
+    setAlertPanelOpen(false);
+  }, []);
 
   const fetchMarket = useCallback(() => {
     setLoadingMarket(true); setServerError(false);
@@ -843,6 +1679,16 @@ function App() {
 
   const displayCoins   = viewMode==='watchlist' ? watchlistCoins : filteredCoins;
   const analyzingCount = needStats&&statsLoading ? statsSourceCoins.filter(c=>statsMap[c.symbol]===undefined).length : 0;
+  const globalFullscreenMarketStats = useMemo(() => {
+    if (!globalFullscreenChart) return null;
+    return marketData.find((item) => item.symbol === globalFullscreenChart.symbol) || {
+      symbol: globalFullscreenChart.symbol,
+      price: '0',
+      priceChangePercent: '0',
+      quoteVolume: '0',
+      count: '0',
+    };
+  }, [globalFullscreenChart, marketData]);
 
   return (
     <div className="app-container">
@@ -897,6 +1743,33 @@ function App() {
                 <span style={{color:starHex(selectedStarColor),fontSize:16}}>★</span>
                 <span className="star-color-arrow">▾</span>
               </button>
+            </div>
+            <div className="alerts-wrap" ref={alertBellRef}>
+              <button className={`alert-bell-btn ${alertPanelOpen?'active':''}`} onClick={()=>setAlertPanelOpen(o=>!o)} title="Сработавшие алерты">
+                <span>🔔</span>
+                {triggeredAlerts.length>0 && <span className="alert-badge">{Math.min(triggeredAlerts.length, 99)}</span>}
+              </button>
+              {alertPanelOpen && (
+                <div className="alert-panel">
+                  <div className="alert-panel-head">
+                    <span>Алерты</span>
+                    <button className="alert-panel-clear" onClick={()=>setTriggeredAlerts([])}>Очистить</button>
+                  </div>
+                  <div className="alert-panel-list">
+                    {triggeredAlerts.length===0 && <div className="alert-empty">Пока нет сработавших алертов</div>}
+                    {triggeredAlerts.map((alert)=>(
+                      <div key={alert.id} className="alert-item">
+                        <div className="alert-item-main">
+                          <div className="alert-item-symbol">{alert.symbol} <span>{alert.tf}</span></div>
+                          <div className="alert-item-price">{alert.price}</div>
+                          <div className="alert-item-label">{alert.label || 'Без подписи'}</div>
+                        </div>
+                        <button className="alert-open-btn" onClick={()=>openAlertChart(alert.symbol, alert.tf)}>Открыть</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="results-count">
               {serverError ? <span style={{color:'#ff3b3b'}}>⚠ Сервер недоступен</span>
@@ -985,7 +1858,7 @@ function App() {
         <CoinList coins={listShowAll?allCoins:filteredCoins} defaultSort={listShowAll?'change':'volume'}
           watchlist={watchlist} onToggleWatch={toggleWatch}
           selectedStarColor={selectedStarColor} statsMap={statsMap} globalTf={activeTab.globalTf}
-          filters={activeFilters} btcMap={btcMap}/>
+          filters={activeFilters} btcMap={btcMap} onAlertTriggered={handleAlertTriggered}/>
       )}
 
       {viewMode==='watchlist' && watchlistCoins.length===0 && (
@@ -1003,10 +1876,45 @@ function App() {
               <VirtualChartCard key={`${ACTIVE_EXCHANGE}-${c.symbol}`} symbol={c.symbol} marketStats={c}
                 globalTf={activeTab.globalTf} filters={activeFilters} btcMap={btcMap}
                 precomputedStats={statsMap[c.symbol]||null}
-                watchlist={watchlist} onToggleWatch={toggleWatch} selectedStarColor={selectedStarColor}/>
+                watchlist={watchlist} onToggleWatch={toggleWatch} selectedStarColor={selectedStarColor}
+                onAlertTriggered={handleAlertTriggered}/>
             ))}
           </div>
         </div>
+      )}
+
+      {alertToasts.length > 0 && (
+        <div className="alert-toast-stack">
+          {alertToasts.map((alert) => (
+            <div key={alert.toastId} className="alert-toast">
+              <div className="alert-toast-title">Алерт: {alert.symbol} <span>{alert.tf}</span></div>
+              <div className="alert-toast-body">{alert.label || 'Уровень достигнут'} · {alert.price}</div>
+              <button className="alert-open-btn" onClick={()=>openAlertChart(alert.symbol, alert.tf)}>Открыть</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {globalFullscreenChart && globalFullscreenMarketStats && ReactDOM.createPortal(
+        <div style={{position:'fixed',top:0,left:0,width:'100vw',height:'100vh',zIndex:99999,background:'#0d0d0f',display:'flex',flexDirection:'column',overflow:'hidden'}}
+          onClick={(e)=>{if(e.target===e.currentTarget)setGlobalFullscreenChart(null);}}>
+          <ChartComponent
+            symbol={globalFullscreenChart.symbol}
+            marketStats={globalFullscreenMarketStats}
+            globalTf={globalFullscreenChart.tf}
+            filters={activeFilters}
+            btcMap={btcMap}
+            isFullscreenMode={true}
+            onClose={()=>setGlobalFullscreenChart(null)}
+            onFullscreen={null}
+            precomputedStats={null}
+            watchlist={watchlist}
+            onToggleWatch={toggleWatch}
+            selectedStarColor={selectedStarColor}
+            enableDrawingTools={true}
+            onAlertTriggered={handleAlertTriggered}
+          />
+        </div>, document.body
       )}
 
       {watchDropOpen && ReactDOM.createPortal(
