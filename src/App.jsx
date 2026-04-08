@@ -558,8 +558,8 @@ const CoinList = ({ coins, exchange, watchlist, onToggleWatch, selectedStarColor
 // ─── Дефолтные фильтры ────────────────────────────────────────────────────────
 const defaultFilters = {
   minVolume:10, maxVolume:99999,    volPeriod:24,
-  minChange:0,  maxChange:99999,      chgPeriod:24,
-  minTrades:0,  maxTrades:99999999, trdPeriod:24,
+  minChange:10, maxChange:99999,    chgPeriod:24,
+  minTrades:1000000, maxTrades:99999999, trdPeriod:24,
   minNatr:0,    maxNatr:100,        natrPeriod:2,
   minVolat:0,   maxVolat:100,       volatPeriod:6,
   minCorr:-100, maxCorr:100,        corrPeriod:1,
@@ -609,7 +609,7 @@ function App() {
         const parsed = JSON.parse(saved);
         return parsed.map(t => {
           const f = {...defaultFilters,...t.filters};
-          if (t.id===1){f.minNatr=0;f.maxNatr=100;f.minVolat=0;f.maxVolat=100;f.minCorr=-100;f.maxCorr=100;}
+          if (t.id===1){f.minNatr=0;f.maxNatr=100;f.minVolat=0;f.maxVolat=100;f.minCorr=-100;f.maxCorr=100;f.maxChange=99999;f.minChange=Math.max(f.minChange,0);}
           return {...t, filters:f, appliedFilters: t.appliedFilters?{...defaultFilters,...t.appliedFilters}:f};
         });
       }
